@@ -133,12 +133,73 @@ export function getSimulatedHardware(hostname: string): HardwareData {
   };
 }
 
+export function getSimulatedSecurityAudit(hostname: string) {
+  const hash = hostname.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  
+  // Default values
+  let firewallEnabled = hash % 5 !== 0; // 80% enabled
+  let defenderActive = hash % 6 !== 0; // 83% active
+  let smbV1Enabled = hash % 3 === 0; // 33% enabled (vulnerability)
+  
+  let insecureAccounts: string[] = [];
+  if (hash % 4 === 0) {
+    insecureAccounts.push("Local Guest Account: Enabled");
+  }
+  if (hash % 7 === 0) {
+    insecureAccounts.push("Default Administrator Account: No password history restriction");
+  }
+  if (hash % 5 === 0) {
+    insecureAccounts.push("Local User 'temp_admin': Password Never Expires");
+  }
+
+  // Handle specific hostnames for a beautiful story
+  if (hostname === "CORP-DC-01" || hostname.includes("DC")) {
+    firewallEnabled = true;
+    defenderActive = true;
+    smbV1Enabled = false;
+    insecureAccounts = [];
+  } else if (hostname === "DESKTOP-R72A1B" || hostname.includes("R72A1B")) {
+    firewallEnabled = true;
+    defenderActive = true;
+    smbV1Enabled = true;
+    insecureAccounts = ["Local Guest Account: Enabled"];
+  } else if (hostname === "MARKETING-LAP04" || hostname.includes("LAP04")) {
+    firewallEnabled = true;
+    defenderActive = false;
+    smbV1Enabled = false;
+    insecureAccounts = ["Local User 'marketing-test': Member of local Administrators group"];
+  } else if (hostname === "HR-RECP-WIN11") {
+    firewallEnabled = false;
+    defenderActive = false;
+    smbV1Enabled = true;
+    insecureAccounts = ["Guest Account: Enabled", "User 'reception': Password Never Expires"];
+  }
+
+  // Calculate score out of 100
+  let score = 100;
+  if (!firewallEnabled) score -= 30;
+  if (!defenderActive) score -= 30;
+  if (smbV1Enabled) score -= 25;
+  if (insecureAccounts.length > 0) {
+    score -= Math.min(15, insecureAccounts.length * 8);
+  }
+
+  return {
+    firewallEnabled,
+    defenderActive,
+    smbV1Enabled,
+    insecureAccounts,
+    auditTime: new Date().toLocaleTimeString(),
+    complianceScore: Math.max(0, score),
+  };
+}
+
 // Emulate network scanning behavior
 export function simulateScanStateTransition(
   computer: Computer,
   stepIndex: number,
   config: CollectorConfig
-): { status: ScanStatus; error?: string; data?: HardwareData } {
+): { status: ScanStatus; error?: string; data?: HardwareData; securityAudit?: any } {
   // Let some computers be inherently offline or fail credentials
   const hash = computer.hostname.split("").reduce((acc, char) => acc + char.charCodeAt(0), 0);
   
@@ -172,10 +233,12 @@ export function simulateScanStateTransition(
 
   // Final success!
   const fullData = getSimulatedHardware(computer.hostname);
+  const auditData = getSimulatedSecurityAudit(computer.hostname);
   
   // Filter data based on selectedAttributes
   return {
     status: 'success',
-    data: fullData
+    data: fullData,
+    securityAudit: auditData
   };
 }

@@ -72,6 +72,16 @@ export interface Computer {
   error?: string;
   data?: HardwareData;
   history?: AuditAttempt[];
+  securityAudit?: SecurityAuditData;
+}
+
+export interface SecurityAuditData {
+  firewallEnabled: boolean;
+  defenderActive: boolean;
+  smbV1Enabled: boolean;
+  insecureAccounts: string[];
+  auditTime: string;
+  complianceScore: number;
 }
 
 export interface AuditAttempt {

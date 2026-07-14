@@ -48,7 +48,7 @@ export default function CollectorConsole({
   const [password, setPassword] = useState("Aa8796sS00");
   const [showPassword, setShowPassword] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [activeTab, setActiveTab] = useState<"config" | "targets" | "ad">("ad"); // Default to AD tab for user's easy inspection of the new feature
+  const [activeTab, setActiveTab] = useState<"config" | "targets" | "ad" | "scan">("ad"); // Default to AD tab for user's easy inspection of the new feature
   const [selectedComputer, setSelectedComputer] = useState<Computer | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [filterStatus, setFilterStatus] = useState<"all" | "success" | "failed" | "offline" | "scanning" | "idle">("all");
@@ -63,6 +63,18 @@ export default function CollectorConsole({
   const [adImported, setAdImported] = useState(false);
   const [adFetchedComputers, setAdFetchedComputers] = useState<Computer[]>([]);
   const [adFetchedUsers, setAdFetchedUsers] = useState<{ sAMAccountName: string; cn: string; title: string }[]>([]);
+  
+  // Advanced AD selective selections
+  const [checkedAdHostnames, setCheckedAdHostnames] = useState<string[]>([]);
+  const [adSearchQuery, setAdSearchQuery] = useState("");
+
+  // Live Network IP/Subnet Scanner State
+  const [scanStartIp, setScanStartIp] = useState("192.168.26.1");
+  const [scanEndIp, setScanEndIp] = useState("192.168.26.25");
+  const [scanPort, setScanPort] = useState(135);
+  const [isSubnetScanning, setIsSubnetScanning] = useState(false);
+  const [subnetScanResults, setSubnetScanResults] = useState<{ ip: string; open: boolean; latencyMs: number; hostname?: string }[]>([]);
+  const [subnetScanLogs, setSubnetScanLogs] = useState<string[]>([]);
 
   const selectedCompFromState = selectedComputer
     ? computers.find((c) => c.hostname === selectedComputer.hostname) || selectedComputer
@@ -71,6 +83,14 @@ export default function CollectorConsole({
   useEffect(() => {
     setShowHistory(false);
   }, [selectedComputer?.hostname]);
+
+  // Sync checked hostnames whenever we fetch new computer accounts
+  useEffect(() => {
+    if (adFetchedComputers.length > 0) {
+      setCheckedAdHostnames(adFetchedComputers.map(c => c.hostname));
+    }
+  }, [adFetchedComputers]);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [logMessages, setLogMessages] = useState<string[]>([]);
   const [bulkSelected, setBulkSelected] = useState<string[]>([]);
@@ -124,27 +144,66 @@ export default function CollectorConsole({
     }
   };
 
-  // Import Computer objects discovered in Active Directory
+  // Live IP Range Scan Function
+  const runSubnetPortScan = async () => {
+    if (isSubnetScanning) return;
+    setIsSubnetScanning(true);
+    setSubnetScanResults([]);
+    setSubnetScanLogs([]);
+    addLog(`Starting active port scan sweep on subnet...`);
+
+    try {
+      const response = await fetch("/api/scan-network", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          startIp: scanStartIp,
+          endIp: scanEndIp,
+          port: scanPort
+        }),
+      });
+
+      const data = await response.json();
+      setSubnetScanLogs(data.logs || []);
+
+      if (data.success) {
+        setSubnetScanResults(data.results || []);
+        addLog(`Network subnet scan complete. Live nodes mapped to console.`);
+      } else {
+        addLog(`Subnet scan failed to complete.`);
+      }
+    } catch (err: any) {
+      const errMsg = `[CRITICAL ERROR] Scan failed: ${err.message || err}`;
+      setSubnetScanLogs((prev) => [...prev, errMsg]);
+      addLog(`Subnet scan encountered a network error.`);
+    } finally {
+      setIsSubnetScanning(false);
+    }
+  };
+
+  // Import Selected/Checked computer objects discovered in Active Directory
   const importAdComputers = () => {
     if (adStatus !== "connected") {
       alert("Please test and establish a connection to Active Directory first.");
       return;
     }
+
+    const computersToImport = adFetchedComputers.filter(c => checkedAdHostnames.includes(c.hostname));
     
-    if (adFetchedComputers.length === 0) {
-      alert("No computers found to import from the domain controller.");
+    if (computersToImport.length === 0) {
+      alert("No computer accounts checked for import. Please select at least one.");
       return;
     }
 
     setComputers((prev) => {
       // Remove any duplicate hostnames
-      const targetHostnames = adFetchedComputers.map(c => c.hostname);
+      const targetHostnames = computersToImport.map(c => c.hostname);
       const filtered = prev.filter((c) => !targetHostnames.includes(c.hostname));
-      return [...filtered, ...adFetchedComputers];
+      return [...filtered, ...computersToImport];
     });
 
     setAdImported(true);
-    addLog(`Successfully synchronized and imported ${adFetchedComputers.length} computer objects from Active Directory into collection queue!`);
+    addLog(`Successfully synchronized and imported ${computersToImport.length} computer accounts from AD into scanning queue!`);
   };
 
   // Add hostname to list
@@ -240,6 +299,7 @@ export default function CollectorConsole({
                 status: result.status,
                 error: result.error,
                 data: result.data || c.data,
+                securityAudit: result.securityAudit || c.securityAudit,
                 lastAttemptTime: timestamp,
                 history: [newAttempt, ...currentHistory].slice(0, 10) // keep last 10 entries
               };
@@ -505,6 +565,17 @@ export default function CollectorConsole({
           >
             <Globe className="inline-block w-3 h-3 mr-1 text-emerald-400" />
             AD Sync
+          </button>
+          <button
+            onClick={() => setActiveTab("scan")}
+            className={`flex-1 py-3 text-[10px] font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
+              activeTab === "scan"
+                ? "border-blue-500 text-white bg-blue-950/20"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            <Search className="inline-block w-3 h-3 mr-1 text-blue-400" />
+            IP Scan
           </button>
         </div>
 
@@ -872,16 +943,51 @@ export default function CollectorConsole({
               {/* Collapsible AD Tree View */}
               {adStatus === "connected" && (
                 <div className="mt-5 border-t border-zinc-850 pt-4 space-y-3 font-mono text-[11px]" id="ad-tree-view">
-                  <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold block">
-                    ساختار درختی اکتیودایرکتوری (AD Tree)
-                  </span>
-                  <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850 space-y-2 max-h-56 overflow-y-auto text-zinc-300">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold block">
+                      ساختار درختی اکتیودایرکتوری (AD Tree)
+                    </span>
+                    <span className="text-[9px] text-zinc-500">
+                      {checkedAdHostnames.length} checked
+                    </span>
+                  </div>
+
+                  {/* AD search and selection helper */}
+                  <div className="space-y-2">
+                    <div className="relative">
+                      <Search className="absolute left-2.5 top-2 w-3.5 h-3.5 text-zinc-500" />
+                      <input
+                        type="text"
+                        value={adSearchQuery}
+                        onChange={(e) => setAdSearchQuery(e.target.value)}
+                        placeholder="جستجو در اشیاء دامین..."
+                        className="w-full bg-zinc-950 border border-zinc-850 rounded-md pl-8 pr-3 py-1 text-[11px] text-white focus:outline-none focus:border-emerald-500"
+                      />
+                    </div>
+
+                    <div className="flex justify-between text-[9px] text-zinc-500 px-1">
+                      <button
+                        onClick={() => setCheckedAdHostnames(adFetchedComputers.map(c => c.hostname))}
+                        className="hover:text-emerald-400 transition"
+                      >
+                        ✓ Select All
+                      </button>
+                      <button
+                        onClick={() => setCheckedAdHostnames([])}
+                        className="hover:text-red-400 transition"
+                      >
+                        ✗ Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850 space-y-3 max-h-64 overflow-y-auto text-zinc-300">
                     <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
                       <Globe className="w-3.5 h-3.5 text-emerald-400" />
                       <span>Domain: {adDomain}</span>
                     </div>
 
-                    {/* Users OU */}
+                    {/* Users OU (Static informational tree nodes for layout) */}
                     <div className="pl-3 border-l border-zinc-800 space-y-1">
                       <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
                         <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
@@ -889,40 +995,34 @@ export default function CollectorConsole({
                       </div>
                       <div className="pl-4 space-y-1 text-zinc-400">
                         {adFetchedUsers.length > 0 ? (
-                          adFetchedUsers.map((u) => (
-                            <div key={u.sAMAccountName} className="flex items-center gap-1 text-[10px]">
-                              <span className="text-emerald-400">👤 {u.sAMAccountName}</span>
-                              <span className="text-[9px] text-zinc-500">({u.cn || u.title || "User"})</span>
-                            </div>
-                          ))
+                          adFetchedUsers
+                            .filter(u => u.sAMAccountName.toLowerCase().includes(adSearchQuery.toLowerCase()))
+                            .map((u) => (
+                              <div key={u.sAMAccountName} className="flex items-center gap-1 text-[10px]">
+                                <span className="text-emerald-400">👤 {u.sAMAccountName}</span>
+                                <span className="text-[9px] text-zinc-500">({u.cn || u.title || "User"})</span>
+                              </div>
+                            ))
                         ) : (
                           <>
                             <div className="flex items-center gap-1 text-[10px]">
                               <span className="text-emerald-500">👤 m.esmaeili</span>
-                              <span className="text-[9px] text-zinc-600">(Domain Admin / مدیر شبکه)</span>
+                              <span className="text-[9px] text-zinc-600">(Domain Admin)</span>
                             </div>
                             <div className="flex items-center gap-1 text-[10px]">
                               <span>👤 s.ahmedi</span>
-                              <span className="text-[9px] text-zinc-600">(IT Support / پشتیبانی)</span>
+                              <span className="text-[9px] text-zinc-600">(IT Support)</span>
                             </div>
                             <div className="flex items-center gap-1 text-[10px]">
                               <span>👤 a.karimi</span>
-                              <span className="text-[9px] text-zinc-600">(Process Engineer / مهندس فرآیند)</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-[10px]">
-                              <span>👤 h.rezai</span>
-                              <span className="text-[9px] text-zinc-600">(Control Operator / اپراتور اتاق کنترل)</span>
-                            </div>
-                            <div className="flex items-center gap-1 text-[10px]">
-                              <span>👤 m.taghavi</span>
-                              <span className="text-[9px] text-zinc-600">(Workshop Manager / مدیر کارگاه)</span>
+                              <span className="text-[9px] text-zinc-600">(Process Engineer)</span>
                             </div>
                           </>
                         )}
                       </div>
                     </div>
 
-                    {/* Computers OU */}
+                    {/* Computers OU (Active selectable objects) */}
                     <div className="pl-3 border-l border-zinc-800 space-y-1">
                       <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
                         <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
@@ -930,12 +1030,31 @@ export default function CollectorConsole({
                       </div>
                       <div className="pl-4 space-y-1 text-zinc-400">
                         {adFetchedComputers.length > 0 ? (
-                          adFetchedComputers.map((c) => (
-                            <div key={c.hostname} className="flex items-center justify-between text-[10px]">
-                              <span className="text-zinc-200 font-bold">🖥️ {c.hostname}</span>
-                              <span className="text-[9px] text-emerald-500">Active</span>
-                            </div>
-                          ))
+                          adFetchedComputers
+                            .filter(c => c.hostname.toLowerCase().includes(adSearchQuery.toLowerCase()))
+                            .map((c) => {
+                              const isChecked = checkedAdHostnames.includes(c.hostname);
+                              return (
+                                <div key={c.hostname} className="flex items-center justify-between text-[10px] py-0.5">
+                                  <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={() => {
+                                        setCheckedAdHostnames(prev =>
+                                          isChecked
+                                            ? prev.filter(h => h !== c.hostname)
+                                            : [...prev, c.hostname]
+                                        );
+                                      }}
+                                      className="accent-emerald-500 rounded border-zinc-800"
+                                    />
+                                    <span className={isChecked ? "text-white font-bold" : "text-zinc-400"}>🖥️ {c.hostname}</span>
+                                  </label>
+                                  <span className="text-[9px] text-emerald-500 font-mono">Active</span>
+                                </div>
+                              );
+                            })
                         ) : (
                           <>
                             <div className="flex items-center justify-between text-[10px]">
@@ -950,18 +1069,6 @@ export default function CollectorConsole({
                               <span className="text-zinc-300">🖥️ WS-BNPP2-ENG01</span>
                               <span className="text-[9px] text-emerald-500">Active</span>
                             </div>
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-zinc-300">🖥️ WS-BNPP2-ENG02</span>
-                              <span className="text-[9px] text-zinc-500">Pending Scan</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-zinc-300">🖥️ WS-BNPP2-CTRL</span>
-                              <span className="text-[9px] text-emerald-500">Active</span>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px]">
-                              <span className="text-zinc-300">🖥️ WS-BNPP2-OFFLINE</span>
-                              <span className="text-[9px] text-amber-500">Offline</span>
-                            </div>
                           </>
                         )}
                       </div>
@@ -975,6 +1082,151 @@ export default function CollectorConsole({
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {activeTab === "scan" && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-lg animate-fadeIn" id="subnet-range-scanner">
+            <h3 className="text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2 pb-2 border-b border-zinc-800 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Search className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
+                Live Subnet IP Port Scanner
+              </span>
+              {isSubnetScanning ? (
+                <span className="text-[9px] bg-blue-950/80 text-blue-400 border border-blue-900/40 px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">
+                  Scanning...
+                </span>
+              ) : (
+                <span className="text-[9px] bg-zinc-950 text-zinc-500 border border-zinc-800 px-1.5 py-0.5 rounded font-bold uppercase">
+                  Ready
+                </span>
+              )}
+            </h3>
+
+            <p className="text-[10px] text-zinc-400 font-mono leading-relaxed mb-2">
+              بررسی سریع پورتهای WMI/WinRM در بازه IP کارگاه برای پیدا کردن کلاینت‌های فعال.
+            </p>
+
+            {/* Inputs */}
+            <div className="grid grid-cols-2 gap-2 font-mono text-[11px]">
+              <div>
+                <label className="text-[10px] text-zinc-500 block mb-1">Start IP address</label>
+                <input
+                  type="text"
+                  value={scanStartIp}
+                  onChange={(e) => setScanStartIp(e.target.value)}
+                  placeholder="192.168.26.1"
+                  className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-2 py-1.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-zinc-500 block mb-1">End IP address</label>
+                <input
+                  type="text"
+                  value={scanEndIp}
+                  onChange={(e) => setScanEndIp(e.target.value)}
+                  placeholder="192.168.26.30"
+                  className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-2 py-1.5 text-white focus:outline-none focus:border-blue-500"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-zinc-500 block mb-1 font-mono">Target Port to Query</label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setScanPort(135)}
+                  className={`py-1.5 px-2 rounded-lg border text-[10px] font-mono text-center transition-all ${
+                    scanPort === 135
+                      ? "bg-blue-950/40 border-blue-500 text-white shadow-sm"
+                      : "bg-zinc-950 border-zinc-800 text-zinc-400"
+                  }`}
+                >
+                  WMI (Port 135)
+                </button>
+                <button
+                  onClick={() => setScanPort(5985)}
+                  className={`py-1.5 px-2 rounded-lg border text-[10px] font-mono text-center transition-all ${
+                    scanPort === 5985
+                      ? "bg-blue-950/40 border-blue-500 text-white shadow-sm"
+                      : "bg-zinc-950 border-zinc-800 text-zinc-400"
+                  }`}
+                >
+                  WinRM (Port 5985)
+                </button>
+              </div>
+            </div>
+
+            {/* Scan logs if any */}
+            {subnetScanLogs.length > 0 && (
+              <div className="bg-zinc-950 border border-zinc-850 rounded-lg p-2.5 max-h-32 overflow-y-auto font-mono text-[9px] text-zinc-300 space-y-0.5">
+                {subnetScanLogs.map((log, index) => (
+                  <div key={index} className="leading-normal">{log}</div>
+                ))}
+              </div>
+            )}
+
+            {/* Subnet Trigger button */}
+            <button
+              onClick={runSubnetPortScan}
+              disabled={isSubnetScanning}
+              className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-mono text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer shadow"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-white ${isSubnetScanning ? "animate-spin" : ""}`} />
+              {isSubnetScanning ? "Scanning range..." : "شروع اسکن فعال بازه IP"}
+            </button>
+
+            {/* Scan Results grid */}
+            {subnetScanResults.length > 0 && (
+              <div className="mt-3 space-y-2 border-t border-zinc-850 pt-3">
+                <div className="flex justify-between items-center text-[10px] font-mono">
+                  <span className="text-zinc-400 font-semibold">مسیریابی کلاینت‌های پاسخگو:</span>
+                  <button
+                    onClick={() => {
+                      const liveNodes = subnetScanResults
+                        .filter(r => r.open)
+                        .map(r => ({
+                          hostname: r.hostname || `NODE-${r.ip.split(".").join("-")}`,
+                          status: "idle" as const,
+                          attempts: 0,
+                          lastAttemptTime: "",
+                          history: []
+                        }));
+                      if (liveNodes.length === 0) {
+                        alert("No live responsive hosts to import.");
+                        return;
+                      }
+                      setComputers(prev => {
+                        const existingHosts = prev.map(c => c.hostname);
+                        const filtered = prev.filter(c => !liveNodes.some(l => l.hostname === c.hostname));
+                        return [...filtered, ...liveNodes];
+                      });
+                      addLog(`Imported ${liveNodes.length} live IP nodes into remote collector queue!`);
+                    }}
+                    className="text-emerald-400 hover:text-emerald-300 font-bold underline transition"
+                  >
+                    + Import All Active Hosts
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-5 gap-1 max-h-40 overflow-y-auto p-1 bg-zinc-950 rounded border border-zinc-850 font-mono text-[9px]">
+                  {subnetScanResults.map((node) => (
+                    <div
+                      key={node.ip}
+                      title={`${node.ip} - ${node.open ? "Open (" + node.latencyMs + "ms)" : "Closed"}`}
+                      className={`p-1 text-center rounded border transition-all ${
+                        node.open
+                          ? "bg-emerald-950/40 border-emerald-500/50 text-emerald-400 font-bold"
+                          : "bg-zinc-900/30 border-zinc-850 text-zinc-600"
+                      }`}
+                    >
+                      <div className="truncate">{node.ip.split(".")[3]}</div>
+                      <div className="text-[7px] opacity-75">{node.open ? `${node.latencyMs}ms` : "down"}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 

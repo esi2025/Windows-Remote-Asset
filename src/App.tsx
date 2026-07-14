@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Computer, CollectorConfig } from "./types";
-import { INITIAL_HOSTNAMES, getSimulatedHardware } from "./mockData";
+import { INITIAL_HOSTNAMES, getSimulatedHardware, getSimulatedSecurityAudit } from "./mockData";
 import NetworkDashboard from "./components/NetworkDashboard";
 import CollectorConsole from "./components/CollectorConsole";
 import ScriptGenerator from "./components/ScriptGenerator";
@@ -38,6 +38,7 @@ export default function App() {
           attempts: 1,
           lastAttemptTime: "Pre-seeded",
           data: getSimulatedHardware(name),
+          securityAudit: getSimulatedSecurityAudit(name),
           history: [
             {
               timestamp: "10:14:02 AM",
@@ -224,7 +225,9 @@ export default function App() {
 
           {activeTab === "gpo" && <GPOHelper />}
 
-          {activeTab === "security" && <SecurityGuide />}
+          {activeTab === "security" && (
+            <SecurityGuide computers={computers} setComputers={setComputers} />
+          )}
         </div>
       </main>
 
