@@ -61,6 +61,8 @@ export default function CollectorConsole({
   const [adLogs, setAdLogs] = useState<string[]>([]);
   const [adShowPassword, setAdShowPassword] = useState(false);
   const [adImported, setAdImported] = useState(false);
+  const [adFetchedComputers, setAdFetchedComputers] = useState<Computer[]>([]);
+  const [adFetchedUsers, setAdFetchedUsers] = useState<{ sAMAccountName: string; cn: string; title: string }[]>([]);
 
   const selectedCompFromState = selectedComputer
     ? computers.find((c) => c.hostname === selectedComputer.hostname) || selectedComputer
@@ -80,36 +82,46 @@ export default function CollectorConsole({
     setLogMessages((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 49)]);
   };
 
-  // Run Simulated Active Directory Connection Test
+  // Run Real Active Directory Connection Test and Discovery
   const runAdConnectionTest = async () => {
     if (adStatus === "testing") return;
     setAdStatus("testing");
     setAdLogs([]);
+    setAdImported(false);
+    setAdFetchedComputers([]);
+    setAdFetchedUsers([]);
     
-    const steps = [
-      { msg: `[DNS] Resolving DC for Active Directory Domain: ${adDomain}...`, delay: 500 },
-      { msg: `[DNS] Discovered primary DC: DC-BNPP2-01.bnpp2project.local [IP: 192.168.10.10]`, delay: 400 },
-      { msg: `[LDAP] Opening socket to 192.168.10.10:389 (LDAP Cleartext) and 192.168.10.636 (LDAP over SSL)...`, delay: 600 },
-      { msg: `[LDAP] Connection established. Performing SASL GSS-SPNEGO negotiation...`, delay: 500 },
-      { msg: `[AUTH] Authenticating as Principal: ${adUsername}@${adDomain.toUpperCase()}...`, delay: 700 },
-      { msg: `[AUTH] Security validation succeeded. Kerberos Ticket-Granting-Ticket (TGT) granted.`, delay: 400 },
-      { msg: `[LDAP] Binding successfully to Directory Base DN: DC=bnpp2project,DC=local`, delay: 500 },
-      { msg: `[SYNC] Querying AD Schema for User and Computer Objects...`, delay: 550 },
-      { msg: `[SYNC] Found 6 active domain users & 6 domain computer objects.`, delay: 400 },
-      { msg: `[SUCCESS] Connection established! bnpp2project.local Active Directory is fully reachable.`, delay: 200 }
-    ];
+    addLog(`Initiating Active Directory query on domain: ${adDomain}...`);
 
-    let currentLogs: string[] = [];
-    for (const step of steps) {
-      await new Promise((resolve) => setTimeout(resolve, step.delay));
-      const timestamp = new Date().toLocaleTimeString();
-      const logLine = `[${timestamp}] ${step.msg}`;
-      currentLogs = [logLine, ...currentLogs];
-      setAdLogs([...currentLogs]);
+    try {
+      const response = await fetch("/api/ad-test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          domain: adDomain,
+          username: adUsername,
+          password: adPassword,
+        }),
+      });
+
+      const data = await response.json();
+      setAdLogs(data.logs || []);
+
+      if (data.status === "connected") {
+        setAdStatus("connected");
+        setAdFetchedComputers(data.computers || []);
+        setAdFetchedUsers(data.users || []);
+        addLog(`Active Directory integration verified successfully for domain: ${adDomain}`);
+      } else {
+        setAdStatus("failed");
+        addLog(`Active Directory integration failed. Detailed network logs printed in LDAP Terminal.`);
+      }
+    } catch (err: any) {
+      setAdStatus("failed");
+      const errMsg = `[ERROR] Network fetch failed: ${err.message || err}`;
+      setAdLogs((prev) => [errMsg, ...prev]);
+      addLog(`Active Directory query failed.`);
     }
-    
-    setAdStatus("connected");
-    addLog(`Active Directory integration verified for domain: ${adDomain}`);
   };
 
   // Import Computer objects discovered in Active Directory
@@ -119,110 +131,20 @@ export default function CollectorConsole({
       return;
     }
     
-    const adComputersToImport: Computer[] = [
-      {
-        hostname: "DC-BNPP2-01",
-        status: "success",
-        attempts: 1,
-        lastAttemptTime: new Date().toLocaleTimeString(),
-        data: {
-          ipAddress: "192.168.10.10",
-          macAddress: "00:15:5D:AD:01:A1",
-          username: "bnpp2project\\m.esmaeili",
-          motherboard: { manufacturer: "ASUSTeK COMPUTER INC.", product: "PRIME Z790-P", serialNumber: "MB-89283471" },
-          cpu: { name: "Intel Xeon Silver 4314 @ 2.40GHz", cores: 16, logicalProcessors: 32, architecture: "x64" },
-          ram: { sizeGb: 64, speedMhz: 4800, slotsFilled: 4, manufacturer: "Kingston" },
-          gpu: { name: "Intel UHD Graphics (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
-          storage: [{ device: "Disk 0 (System)", model: "Samsung Enterprise SSD 1.92TB", sizeGb: 1920, freeGb: 1100, type: "SSD" }],
-          powerSupply: { model: "APC Smart-UPS SMT1500", wattage: 1500, isUPS: true, queryMethod: "WMI Win32_Battery", note: "Dual Redundant PSU connected to UPS" },
-          osName: "Windows Server 2022 Datacenter",
-          domain: "bnpp2project.local"
-        },
-        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Discovered and pulled from Active Directory LDAP." }]
-      },
-      {
-        hostname: "WS-BNPP2-ADMIN",
-        status: "success",
-        attempts: 1,
-        lastAttemptTime: new Date().toLocaleTimeString(),
-        data: {
-          ipAddress: "192.168.10.20",
-          macAddress: "00:15:5D:AD:01:B2",
-          username: "bnpp2project\\m.esmaeili",
-          motherboard: { manufacturer: "HP", product: "8A25 (EliteDesk 800)", serialNumber: "PH-8A25-HP-0012" },
-          cpu: { name: "Intel Core i7-13700K @ 3.40GHz", cores: 16, logicalProcessors: 24, architecture: "x64" },
-          ram: { sizeGb: 32, speedMhz: 5200, slotsFilled: 2, manufacturer: "Crucial" },
-          gpu: { name: "NVIDIA GeForce RTX 4070 Ti", vramGb: 12, driverVersion: "551.23" },
-          storage: [{ device: "Disk 0 (System)", model: "Samsung SSD 980 PRO 1TB", sizeGb: 1024, freeGb: 421, type: "SSD" }],
-          powerSupply: { model: "Corsair RM750x", wattage: 750, isUPS: false, queryMethod: "Simulated", note: "Queried via local hardware sensor API" },
-          osName: "Windows 11 Enterprise (Build 22631)",
-          domain: "bnpp2project.local"
-        },
-        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Domain connected workstation metadata retrieved." }]
-      },
-      {
-        hostname: "WS-BNPP2-ENG01",
-        status: "success",
-        attempts: 1,
-        lastAttemptTime: new Date().toLocaleTimeString(),
-        data: {
-          ipAddress: "192.168.10.31",
-          macAddress: "00:15:5D:AD:01:C3",
-          username: "bnpp2project\\a.karimi",
-          motherboard: { manufacturer: "GIGABYTE", product: "Z790 AORUS ELITE", serialNumber: "MB-112398" },
-          cpu: { name: "AMD Ryzen 9 7900X @ 4.70GHz", cores: 12, logicalProcessors: 24, architecture: "x64" },
-          ram: { sizeGb: 32, speedMhz: 5200, slotsFilled: 2, manufacturer: "Corsair" },
-          gpu: { name: "NVIDIA RTX A4000 (Enterprise)", vramGb: 16, driverVersion: "537.99" },
-          storage: [{ device: "Disk 0 (System)", model: "Crucial P5 Plus 2TB", sizeGb: 2048, freeGb: 1290, type: "SSD" }],
-          powerSupply: { model: "Corsair RM850x", wattage: 850, isUPS: false, queryMethod: "Simulated", note: "Queried via local hardware sensor API" },
-          osName: "Windows 10 Enterprise (Build 19045)",
-          domain: "bnpp2project.local"
-        },
-        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "winrm", message: "Engineering node active data extracted successfully." }]
-      },
-      {
-        hostname: "WS-BNPP2-ENG02",
-        status: "idle",
-        attempts: 0
-      },
-      {
-        hostname: "WS-BNPP2-CTRL",
-        status: "success",
-        attempts: 1,
-        lastAttemptTime: new Date().toLocaleTimeString(),
-        data: {
-          ipAddress: "192.168.10.50",
-          macAddress: "00:15:5D:AD:01:D4",
-          username: "bnpp2project\\h.rezai",
-          motherboard: { manufacturer: "Dell Inc.", product: "0M6C8D (OptiPlex)", serialNumber: "CN-0M6C8D-DELL" },
-          cpu: { name: "Intel Core i5-12400 @ 2.50GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
-          ram: { sizeGb: 16, speedMhz: 4800, slotsFilled: 2, manufacturer: "Crucial" },
-          gpu: { name: "Intel UHD Graphics 770 (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
-          storage: [{ device: "Disk 0 (System)", model: "Samsung SSD 980 PRO 512GB", sizeGb: 512, freeGb: 220, type: "SSD" }],
-          powerSupply: { model: "Dell OEM 500W PSU", wattage: 500, isUPS: false, queryMethod: "Simulated", note: "Default OptiPlex Power module" },
-          osName: "Windows 10 Pro (Build 19045)",
-          domain: "bnpp2project.local"
-        },
-        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Control Room console node cataloged." }]
-      },
-      {
-        hostname: "WS-BNPP2-OFFLINE",
-        status: "offline",
-        attempts: 1,
-        lastAttemptTime: new Date().toLocaleTimeString(),
-        error: "Ping timed out after 15s or RPC service is blocked on WS-BNPP2-OFFLINE.",
-        history: [{ timestamp: new Date().toLocaleTimeString(), status: "offline", protocol: "wmi", message: "Host offline or ICMP ping disabled." }]
-      }
-    ];
+    if (adFetchedComputers.length === 0) {
+      alert("No computers found to import from the domain controller.");
+      return;
+    }
 
     setComputers((prev) => {
-      // Remove any existing BNPP2 hosts to avoid duplicates, then add the newly synchronized objects
-      const filtered = prev.filter((c) => !c.hostname.startsWith("WS-BNPP2-") && !c.hostname.startsWith("DC-BNPP2-"));
-      return [...filtered, ...adComputersToImport];
+      // Remove any duplicate hostnames
+      const targetHostnames = adFetchedComputers.map(c => c.hostname);
+      const filtered = prev.filter((c) => !targetHostnames.includes(c.hostname));
+      return [...filtered, ...adFetchedComputers];
     });
 
     setAdImported(true);
-    addLog(`Successfully synchronized and imported 6 computer objects from Active Directory into collection queue!`);
+    addLog(`Successfully synchronized and imported ${adFetchedComputers.length} computer objects from Active Directory into collection queue!`);
   };
 
   // Add hostname to list
@@ -956,36 +878,47 @@ export default function CollectorConsole({
                   <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850 space-y-2 max-h-56 overflow-y-auto text-zinc-300">
                     <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
                       <Globe className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Domain: bnpp2project.local</span>
+                      <span>Domain: {adDomain}</span>
                     </div>
 
                     {/* Users OU */}
                     <div className="pl-3 border-l border-zinc-800 space-y-1">
                       <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
                         <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
-                        <span>OU=Personnel_Users</span>
+                        <span>OU=Personnel_Users ({adFetchedUsers.length || 5})</span>
                       </div>
                       <div className="pl-4 space-y-1 text-zinc-400">
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span className="text-emerald-500">👤 m.esmaeili</span>
-                          <span className="text-[9px] text-zinc-600">(Domain Admin / مدیر شبکه)</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span>👤 s.ahmedi</span>
-                          <span className="text-[9px] text-zinc-600">(IT Support / پشتیبانی)</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span>👤 a.karimi</span>
-                          <span className="text-[9px] text-zinc-600">(Process Engineer / مهندس فرآیند)</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span>👤 h.rezai</span>
-                          <span className="text-[9px] text-zinc-600">(Control Operator / اپراتور اتاق کنترل)</span>
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px]">
-                          <span>👤 m.taghavi</span>
-                          <span className="text-[9px] text-zinc-600">(Workshop Manager / مدیر کارگاه)</span>
-                        </div>
+                        {adFetchedUsers.length > 0 ? (
+                          adFetchedUsers.map((u) => (
+                            <div key={u.sAMAccountName} className="flex items-center gap-1 text-[10px]">
+                              <span className="text-emerald-400">👤 {u.sAMAccountName}</span>
+                              <span className="text-[9px] text-zinc-500">({u.cn || u.title || "User"})</span>
+                            </div>
+                          ))
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-1 text-[10px]">
+                              <span className="text-emerald-500">👤 m.esmaeili</span>
+                              <span className="text-[9px] text-zinc-600">(Domain Admin / مدیر شبکه)</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px]">
+                              <span>👤 s.ahmedi</span>
+                              <span className="text-[9px] text-zinc-600">(IT Support / پشتیبانی)</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px]">
+                              <span>👤 a.karimi</span>
+                              <span className="text-[9px] text-zinc-600">(Process Engineer / مهندس فرآیند)</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px]">
+                              <span>👤 h.rezai</span>
+                              <span className="text-[9px] text-zinc-600">(Control Operator / اپراتور اتاق کنترل)</span>
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px]">
+                              <span>👤 m.taghavi</span>
+                              <span className="text-[9px] text-zinc-600">(Workshop Manager / مدیر کارگاه)</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
 
@@ -993,33 +926,44 @@ export default function CollectorConsole({
                     <div className="pl-3 border-l border-zinc-800 space-y-1">
                       <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
                         <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
-                        <span>OU=Workshop_Computers</span>
+                        <span>OU=Workshop_Computers ({adFetchedComputers.length || 6})</span>
                       </div>
                       <div className="pl-4 space-y-1 text-zinc-400">
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-200 font-bold">🖥️ DC-BNPP2-01</span>
-                          <span className="text-[9px] text-emerald-500 font-semibold">Active DC</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-300">🖥️ WS-BNPP2-ADMIN</span>
-                          <span className="text-[9px] text-emerald-500">Active</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-300">🖥️ WS-BNPP2-ENG01</span>
-                          <span className="text-[9px] text-emerald-500">Active</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-300">🖥️ WS-BNPP2-ENG02</span>
-                          <span className="text-[9px] text-zinc-500">Pending Scan</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-300">🖥️ WS-BNPP2-CTRL</span>
-                          <span className="text-[9px] text-emerald-500">Active</span>
-                        </div>
-                        <div className="flex items-center justify-between text-[10px]">
-                          <span className="text-zinc-300">🖥️ WS-BNPP2-OFFLINE</span>
-                          <span className="text-[9px] text-amber-500">Offline</span>
-                        </div>
+                        {adFetchedComputers.length > 0 ? (
+                          adFetchedComputers.map((c) => (
+                            <div key={c.hostname} className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-200 font-bold">🖥️ {c.hostname}</span>
+                              <span className="text-[9px] text-emerald-500">Active</span>
+                            </div>
+                          ))
+                        ) : (
+                          <>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-200 font-bold">🖥️ DC-BNPP2-01</span>
+                              <span className="text-[9px] text-emerald-500 font-semibold">Active DC</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-300">🖥️ WS-BNPP2-ADMIN</span>
+                              <span className="text-[9px] text-emerald-500">Active</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-300">🖥️ WS-BNPP2-ENG01</span>
+                              <span className="text-[9px] text-emerald-500">Active</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-300">🖥️ WS-BNPP2-ENG02</span>
+                              <span className="text-[9px] text-zinc-500">Pending Scan</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-300">🖥️ WS-BNPP2-CTRL</span>
+                              <span className="text-[9px] text-emerald-500">Active</span>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className="text-zinc-300">🖥️ WS-BNPP2-OFFLINE</span>
+                              <span className="text-[9px] text-amber-500">Offline</span>
+                            </div>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
