@@ -48,10 +48,20 @@ export function getSimulatedHardware(hostname: string): HardwareData {
   }
   const macAddress = macParts.join(":");
 
-  const domain = hostname.includes("CORP") || hostname.includes("SECURE") ? "CORP.ENTERPRISE.LOCAL" : "WORKGROUP";
+  const isBNPP2 = hostname.includes("BNPP2") || hostname.includes("bnpp2project");
+  const domain = isBNPP2 
+    ? "bnpp2project.local"
+    : (hostname.includes("CORP") || hostname.includes("SECURE") ? "CORP.ENTERPRISE.LOCAL" : "WORKGROUP");
   
-  const userList = ["a.jones", "s.patel", "m.smith", "admin.local", "k.williams", "engineer_01"];
-  const username = `${domain !== "WORKGROUP" ? "CORP" : hostname}\\${userList[hash % userList.length]}`;
+  const adUserList = ["m.esmaeili", "administrator", "s.ahmedi", "a.karimi", "h.rezai", "m.taghavi"];
+  const corpUserList = ["a.jones", "s.patel", "m.smith", "admin.local", "k.williams", "engineer_01"];
+  
+  let username = "";
+  if (isBNPP2) {
+    username = `bnpp2project\\${adUserList[hash % adUserList.length]}`;
+  } else {
+    username = `${domain !== "WORKGROUP" ? "CORP" : hostname}\\${corpUserList[hash % corpUserList.length]}`;
+  }
 
   const cpu = CPU_PRESETS[hash % CPU_PRESETS.length];
   const gpu = GPU_PRESETS[hash % GPU_PRESETS.length];

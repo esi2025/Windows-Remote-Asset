@@ -85,7 +85,7 @@ export default function App() {
   const [config, setConfig] = useState<CollectorConfig>({
     protocol: "wmi",
     authMethod: "domain",
-    username: "CORP\\Administrator",
+    username: "bnpp2project.local\\m.esmaeili",
     retryIntervalMinutes: 60,
     maxRetries: 3,
     timeoutSeconds: 15,

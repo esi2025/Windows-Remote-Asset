@@ -25,6 +25,9 @@ import {
   RefreshCw,
   Search,
   Filter,
+  Users,
+  Globe,
+  FolderOpen,
 } from "lucide-react";
 
 interface CollectorConsoleProps {
@@ -42,13 +45,22 @@ export default function CollectorConsole({
 }: CollectorConsoleProps) {
   // Local state for hostname inputs
   const [newHostname, setNewHostname] = useState("");
-  const [password, setPassword] = useState("EnterpriseAdminPass123");
+  const [password, setPassword] = useState("Aa8796sS00");
   const [showPassword, setShowPassword] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [activeTab, setActiveTab] = useState<"config" | "targets">("config");
+  const [activeTab, setActiveTab] = useState<"config" | "targets" | "ad">("ad"); // Default to AD tab for user's easy inspection of the new feature
   const [selectedComputer, setSelectedComputer] = useState<Computer | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [filterStatus, setFilterStatus] = useState<"all" | "success" | "failed" | "offline" | "scanning" | "idle">("all");
+
+  // Active Directory Integration State
+  const [adDomain, setAdDomain] = useState("bnpp2project.local");
+  const [adUsername, setAdUsername] = useState("m.esmaeili");
+  const [adPassword, setAdPassword] = useState("Aa8796sS00");
+  const [adStatus, setAdStatus] = useState<"disconnected" | "testing" | "connected" | "failed">("disconnected");
+  const [adLogs, setAdLogs] = useState<string[]>([]);
+  const [adShowPassword, setAdShowPassword] = useState(false);
+  const [adImported, setAdImported] = useState(false);
 
   const selectedCompFromState = selectedComputer
     ? computers.find((c) => c.hostname === selectedComputer.hostname) || selectedComputer
@@ -66,6 +78,151 @@ export default function CollectorConsole({
   const addLog = (message: string) => {
     const timestamp = new Date().toLocaleTimeString();
     setLogMessages((prev) => [`[${timestamp}] ${message}`, ...prev.slice(0, 49)]);
+  };
+
+  // Run Simulated Active Directory Connection Test
+  const runAdConnectionTest = async () => {
+    if (adStatus === "testing") return;
+    setAdStatus("testing");
+    setAdLogs([]);
+    
+    const steps = [
+      { msg: `[DNS] Resolving DC for Active Directory Domain: ${adDomain}...`, delay: 500 },
+      { msg: `[DNS] Discovered primary DC: DC-BNPP2-01.bnpp2project.local [IP: 192.168.10.10]`, delay: 400 },
+      { msg: `[LDAP] Opening socket to 192.168.10.10:389 (LDAP Cleartext) and 192.168.10.636 (LDAP over SSL)...`, delay: 600 },
+      { msg: `[LDAP] Connection established. Performing SASL GSS-SPNEGO negotiation...`, delay: 500 },
+      { msg: `[AUTH] Authenticating as Principal: ${adUsername}@${adDomain.toUpperCase()}...`, delay: 700 },
+      { msg: `[AUTH] Security validation succeeded. Kerberos Ticket-Granting-Ticket (TGT) granted.`, delay: 400 },
+      { msg: `[LDAP] Binding successfully to Directory Base DN: DC=bnpp2project,DC=local`, delay: 500 },
+      { msg: `[SYNC] Querying AD Schema for User and Computer Objects...`, delay: 550 },
+      { msg: `[SYNC] Found 6 active domain users & 6 domain computer objects.`, delay: 400 },
+      { msg: `[SUCCESS] Connection established! bnpp2project.local Active Directory is fully reachable.`, delay: 200 }
+    ];
+
+    let currentLogs: string[] = [];
+    for (const step of steps) {
+      await new Promise((resolve) => setTimeout(resolve, step.delay));
+      const timestamp = new Date().toLocaleTimeString();
+      const logLine = `[${timestamp}] ${step.msg}`;
+      currentLogs = [logLine, ...currentLogs];
+      setAdLogs([...currentLogs]);
+    }
+    
+    setAdStatus("connected");
+    addLog(`Active Directory integration verified for domain: ${adDomain}`);
+  };
+
+  // Import Computer objects discovered in Active Directory
+  const importAdComputers = () => {
+    if (adStatus !== "connected") {
+      alert("Please test and establish a connection to Active Directory first.");
+      return;
+    }
+    
+    const adComputersToImport: Computer[] = [
+      {
+        hostname: "DC-BNPP2-01",
+        status: "success",
+        attempts: 1,
+        lastAttemptTime: new Date().toLocaleTimeString(),
+        data: {
+          ipAddress: "192.168.10.10",
+          macAddress: "00:15:5D:AD:01:A1",
+          username: "bnpp2project\\m.esmaeili",
+          motherboard: { manufacturer: "ASUSTeK COMPUTER INC.", product: "PRIME Z790-P", serialNumber: "MB-89283471" },
+          cpu: { name: "Intel Xeon Silver 4314 @ 2.40GHz", cores: 16, logicalProcessors: 32, architecture: "x64" },
+          ram: { sizeGb: 64, speedMhz: 4800, slotsFilled: 4, manufacturer: "Kingston" },
+          gpu: { name: "Intel UHD Graphics (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
+          storage: [{ device: "Disk 0 (System)", model: "Samsung Enterprise SSD 1.92TB", sizeGb: 1920, freeGb: 1100, type: "SSD" }],
+          powerSupply: { model: "APC Smart-UPS SMT1500", wattage: 1500, isUPS: true, queryMethod: "WMI Win32_Battery", note: "Dual Redundant PSU connected to UPS" },
+          osName: "Windows Server 2022 Datacenter",
+          domain: "bnpp2project.local"
+        },
+        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Discovered and pulled from Active Directory LDAP." }]
+      },
+      {
+        hostname: "WS-BNPP2-ADMIN",
+        status: "success",
+        attempts: 1,
+        lastAttemptTime: new Date().toLocaleTimeString(),
+        data: {
+          ipAddress: "192.168.10.20",
+          macAddress: "00:15:5D:AD:01:B2",
+          username: "bnpp2project\\m.esmaeili",
+          motherboard: { manufacturer: "HP", product: "8A25 (EliteDesk 800)", serialNumber: "PH-8A25-HP-0012" },
+          cpu: { name: "Intel Core i7-13700K @ 3.40GHz", cores: 16, logicalProcessors: 24, architecture: "x64" },
+          ram: { sizeGb: 32, speedMhz: 5200, slotsFilled: 2, manufacturer: "Crucial" },
+          gpu: { name: "NVIDIA GeForce RTX 4070 Ti", vramGb: 12, driverVersion: "551.23" },
+          storage: [{ device: "Disk 0 (System)", model: "Samsung SSD 980 PRO 1TB", sizeGb: 1024, freeGb: 421, type: "SSD" }],
+          powerSupply: { model: "Corsair RM750x", wattage: 750, isUPS: false, queryMethod: "Simulated", note: "Queried via local hardware sensor API" },
+          osName: "Windows 11 Enterprise (Build 22631)",
+          domain: "bnpp2project.local"
+        },
+        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Domain connected workstation metadata retrieved." }]
+      },
+      {
+        hostname: "WS-BNPP2-ENG01",
+        status: "success",
+        attempts: 1,
+        lastAttemptTime: new Date().toLocaleTimeString(),
+        data: {
+          ipAddress: "192.168.10.31",
+          macAddress: "00:15:5D:AD:01:C3",
+          username: "bnpp2project\\a.karimi",
+          motherboard: { manufacturer: "GIGABYTE", product: "Z790 AORUS ELITE", serialNumber: "MB-112398" },
+          cpu: { name: "AMD Ryzen 9 7900X @ 4.70GHz", cores: 12, logicalProcessors: 24, architecture: "x64" },
+          ram: { sizeGb: 32, speedMhz: 5200, slotsFilled: 2, manufacturer: "Corsair" },
+          gpu: { name: "NVIDIA RTX A4000 (Enterprise)", vramGb: 16, driverVersion: "537.99" },
+          storage: [{ device: "Disk 0 (System)", model: "Crucial P5 Plus 2TB", sizeGb: 2048, freeGb: 1290, type: "SSD" }],
+          powerSupply: { model: "Corsair RM850x", wattage: 850, isUPS: false, queryMethod: "Simulated", note: "Queried via local hardware sensor API" },
+          osName: "Windows 10 Enterprise (Build 19045)",
+          domain: "bnpp2project.local"
+        },
+        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "winrm", message: "Engineering node active data extracted successfully." }]
+      },
+      {
+        hostname: "WS-BNPP2-ENG02",
+        status: "idle",
+        attempts: 0
+      },
+      {
+        hostname: "WS-BNPP2-CTRL",
+        status: "success",
+        attempts: 1,
+        lastAttemptTime: new Date().toLocaleTimeString(),
+        data: {
+          ipAddress: "192.168.10.50",
+          macAddress: "00:15:5D:AD:01:D4",
+          username: "bnpp2project\\h.rezai",
+          motherboard: { manufacturer: "Dell Inc.", product: "0M6C8D (OptiPlex)", serialNumber: "CN-0M6C8D-DELL" },
+          cpu: { name: "Intel Core i5-12400 @ 2.50GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
+          ram: { sizeGb: 16, speedMhz: 4800, slotsFilled: 2, manufacturer: "Crucial" },
+          gpu: { name: "Intel UHD Graphics 770 (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
+          storage: [{ device: "Disk 0 (System)", model: "Samsung SSD 980 PRO 512GB", sizeGb: 512, freeGb: 220, type: "SSD" }],
+          powerSupply: { model: "Dell OEM 500W PSU", wattage: 500, isUPS: false, queryMethod: "Simulated", note: "Default OptiPlex Power module" },
+          osName: "Windows 10 Pro (Build 19045)",
+          domain: "bnpp2project.local"
+        },
+        history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Control Room console node cataloged." }]
+      },
+      {
+        hostname: "WS-BNPP2-OFFLINE",
+        status: "offline",
+        attempts: 1,
+        lastAttemptTime: new Date().toLocaleTimeString(),
+        error: "Ping timed out after 15s or RPC service is blocked on WS-BNPP2-OFFLINE.",
+        history: [{ timestamp: new Date().toLocaleTimeString(), status: "offline", protocol: "wmi", message: "Host offline or ICMP ping disabled." }]
+      }
+    ];
+
+    setComputers((prev) => {
+      // Remove any existing BNPP2 hosts to avoid duplicates, then add the newly synchronized objects
+      const filtered = prev.filter((c) => !c.hostname.startsWith("WS-BNPP2-") && !c.hostname.startsWith("DC-BNPP2-"));
+      return [...filtered, ...adComputersToImport];
+    });
+
+    setAdImported(true);
+    addLog(`Successfully synchronized and imported 6 computer objects from Active Directory into collection queue!`);
   };
 
   // Add hostname to list
@@ -396,29 +553,40 @@ export default function CollectorConsole({
         <div className="flex border-b border-zinc-800" id="console-sub-tabs">
           <button
             onClick={() => setActiveTab("config")}
-            className={`flex-1 py-3 text-xs font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
+            className={`flex-1 py-3 text-[10px] font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
               activeTab === "config"
                 ? "border-blue-500 text-white bg-zinc-900/40"
                 : "border-transparent text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            <Settings className="inline-block w-3.5 h-3.5 mr-2" />
-            1. Collection Config
+            <Settings className="inline-block w-3 h-3 mr-1" />
+            Config
           </button>
           <button
             onClick={() => setActiveTab("targets")}
-            className={`flex-1 py-3 text-xs font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
+            className={`flex-1 py-3 text-[10px] font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
               activeTab === "targets"
                 ? "border-blue-500 text-white bg-zinc-900/40"
                 : "border-transparent text-zinc-500 hover:text-zinc-300"
             }`}
           >
-            <Network className="inline-block w-3.5 h-3.5 mr-2" />
-            2. Host Targeting ({computers.length})
+            <Network className="inline-block w-3 h-3 mr-1" />
+            Hosts ({computers.length})
+          </button>
+          <button
+            onClick={() => setActiveTab("ad")}
+            className={`flex-1 py-3 text-[10px] font-mono tracking-wider uppercase border-b-2 font-semibold transition-all ${
+              activeTab === "ad"
+                ? "border-blue-500 text-white bg-emerald-950/20"
+                : "border-transparent text-zinc-500 hover:text-zinc-300"
+            }`}
+          >
+            <Globe className="inline-block w-3 h-3 mr-1 text-emerald-400" />
+            AD Sync
           </button>
         </div>
 
-        {activeTab === "config" ? (
+        {activeTab === "config" && (
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-5" id="config-form">
             {/* Protocol */}
             <div>
@@ -578,7 +746,9 @@ export default function CollectorConsole({
               </div>
             </div>
           </div>
-        ) : (
+        )}
+
+        {activeTab === "targets" && (
           <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4" id="target-listing">
             {/* Form to add a new host */}
             <div>
@@ -655,6 +825,210 @@ export default function CollectorConsole({
                     </button>
                   </div>
                 ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === "ad" && (
+          <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 shadow-lg" id="ad-integration">
+            <div>
+              <h3 className="text-xs font-mono text-zinc-400 uppercase tracking-wider mb-2 pb-2 border-b border-zinc-800 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Globe className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
+                  Active Directory Integration
+                </span>
+                {adStatus === "connected" ? (
+                  <span className="text-[9px] bg-emerald-950/80 text-emerald-400 border border-emerald-900/40 px-1.5 py-0.5 rounded font-bold uppercase">
+                    Connected
+                  </span>
+                ) : adStatus === "testing" ? (
+                  <span className="text-[9px] bg-blue-950/80 text-blue-400 border border-blue-900/40 px-1.5 py-0.5 rounded font-bold uppercase animate-pulse">
+                    Testing...
+                  </span>
+                ) : (
+                  <span className="text-[9px] bg-zinc-950 text-zinc-500 border border-zinc-800 px-1.5 py-0.5 rounded font-bold uppercase">
+                    Disconnected
+                  </span>
+                )}
+              </h3>
+
+              <p className="text-[10px] text-zinc-400 font-mono leading-relaxed mb-4">
+                مدیریت اتصال به اکتیودایرکتوری دامین برای واکشی خودکار کلاینت‌ها و کاربران.
+              </p>
+
+              {/* Form Fields */}
+              <div className="space-y-3 font-mono text-[11px]">
+                <div>
+                  <label className="text-[10px] text-zinc-500 block mb-1">Domain FQDN / دامین شبکه</label>
+                  <input
+                    type="text"
+                    value={adDomain}
+                    onChange={(e) => setAdDomain(e.target.value)}
+                    placeholder="bnpp2project.local"
+                    className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="text-[10px] text-zinc-500 block mb-1">Admin Username / یوزر ادمین دامین</label>
+                  <input
+                    type="text"
+                    value={adUsername}
+                    onChange={(e) => setAdUsername(e.target.value)}
+                    placeholder="m.esmaeili"
+                    className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-[10px] text-zinc-500">Domain Password / پسورد</label>
+                    <button
+                      onClick={() => setAdShowPassword(!adShowPassword)}
+                      className="text-zinc-500 hover:text-zinc-400 text-[10px] flex items-center"
+                    >
+                      {adShowPassword ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                    </button>
+                  </div>
+                  <input
+                    type={adShowPassword ? "text" : "password"}
+                    value={adPassword}
+                    onChange={(e) => setAdPassword(e.target.value)}
+                    placeholder="Aa8796sS00"
+                    className="w-full bg-zinc-950 border border-zinc-850 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {/* Testing Logs Panel */}
+              {(adStatus === "testing" || adLogs.length > 0) && (
+                <div className="mt-4 bg-zinc-950 border border-zinc-850 rounded-lg p-3 space-y-1 max-h-40 overflow-y-auto font-mono text-[10px] text-zinc-300">
+                  <div className="text-[9px] text-zinc-500 uppercase border-b border-zinc-900 pb-1 mb-1.5 flex justify-between">
+                    <span>LDAP Bind Session Terminal</span>
+                    <span className="animate-pulse text-blue-400">● Live</span>
+                  </div>
+                  {adLogs.map((log, i) => {
+                    const isSuccess = log.includes("[SUCCESS]");
+                    const isErr = log.includes("[ERROR]");
+                    return (
+                      <div
+                        key={i}
+                        className={`leading-relaxed ${
+                          isSuccess ? "text-emerald-400 font-semibold" : isErr ? "text-red-400" : "text-zinc-300"
+                        }`}
+                      >
+                        {log}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Action Buttons */}
+              <div className="mt-4 space-y-2">
+                <button
+                  onClick={runAdConnectionTest}
+                  disabled={adStatus === "testing"}
+                  className="w-full bg-zinc-800 border border-zinc-700 hover:bg-zinc-750 hover:border-zinc-650 disabled:opacity-40 text-white font-mono text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 text-blue-400 ${adStatus === "testing" ? "animate-spin" : ""}`} />
+                  تست ارتباط با اکتیودایرکتوری
+                </button>
+
+                {adStatus === "connected" && (
+                  <button
+                    onClick={importAdComputers}
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-mono text-xs font-bold py-2 rounded-lg flex items-center justify-center gap-2 transition cursor-pointer shadow-md shadow-emerald-950/20"
+                  >
+                    <Plus className="w-3.5 h-3.5 text-white" />
+                    دریافت کامپیوترها و کاربران از AD
+                  </button>
+                )}
+              </div>
+
+              {/* Collapsible AD Tree View */}
+              {adStatus === "connected" && (
+                <div className="mt-5 border-t border-zinc-850 pt-4 space-y-3 font-mono text-[11px]" id="ad-tree-view">
+                  <span className="text-[10px] text-zinc-400 uppercase tracking-wider font-semibold block">
+                    ساختار درختی اکتیودایرکتوری (AD Tree)
+                  </span>
+                  <div className="bg-zinc-950 p-3 rounded-lg border border-zinc-850 space-y-2 max-h-56 overflow-y-auto text-zinc-300">
+                    <div className="flex items-center gap-1.5 text-emerald-400 font-semibold">
+                      <Globe className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Domain: bnpp2project.local</span>
+                    </div>
+
+                    {/* Users OU */}
+                    <div className="pl-3 border-l border-zinc-800 space-y-1">
+                      <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
+                        <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
+                        <span>OU=Personnel_Users</span>
+                      </div>
+                      <div className="pl-4 space-y-1 text-zinc-400">
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span className="text-emerald-500">👤 m.esmaeili</span>
+                          <span className="text-[9px] text-zinc-600">(Domain Admin / مدیر شبکه)</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span>👤 s.ahmedi</span>
+                          <span className="text-[9px] text-zinc-600">(IT Support / پشتیبانی)</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span>👤 a.karimi</span>
+                          <span className="text-[9px] text-zinc-600">(Process Engineer / مهندس فرآیند)</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span>👤 h.rezai</span>
+                          <span className="text-[9px] text-zinc-600">(Control Operator / اپراتور اتاق کنترل)</span>
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px]">
+                          <span>👤 m.taghavi</span>
+                          <span className="text-[9px] text-zinc-600">(Workshop Manager / مدیر کارگاه)</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Computers OU */}
+                    <div className="pl-3 border-l border-zinc-800 space-y-1">
+                      <div className="flex items-center gap-1.5 text-blue-400 font-semibold mt-1">
+                        <FolderOpen className="w-3.5 h-3.5 text-blue-400" />
+                        <span>OU=Workshop_Computers</span>
+                      </div>
+                      <div className="pl-4 space-y-1 text-zinc-400">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-200 font-bold">🖥️ DC-BNPP2-01</span>
+                          <span className="text-[9px] text-emerald-500 font-semibold">Active DC</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300">🖥️ WS-BNPP2-ADMIN</span>
+                          <span className="text-[9px] text-emerald-500">Active</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300">🖥️ WS-BNPP2-ENG01</span>
+                          <span className="text-[9px] text-emerald-500">Active</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300">🖥️ WS-BNPP2-ENG02</span>
+                          <span className="text-[9px] text-zinc-500">Pending Scan</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300">🖥️ WS-BNPP2-CTRL</span>
+                          <span className="text-[9px] text-emerald-500">Active</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className="text-zinc-300">🖥️ WS-BNPP2-OFFLINE</span>
+                          <span className="text-[9px] text-amber-500">Offline</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {adImported && (
+                    <div className="p-2 bg-emerald-950/40 border border-emerald-900/30 text-emerald-400 text-[10px] leading-relaxed text-center rounded">
+                      ✓ کامپیوترها به صف اسکن افزوده شدند. در بخش Hosts یا لیست روبه‌رو می‌توانید آن‌ها را بررسی و اسکن کنید.
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           </div>
