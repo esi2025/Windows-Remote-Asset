@@ -1,0 +1,6 @@
+{
+  "name": "Windows Remote Asset Collector",
+  "description": "An interactive remote asset data collection console and custom script generator for enterprise Windows networks using WMI and WinRM.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
