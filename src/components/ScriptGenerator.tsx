@@ -37,6 +37,15 @@ export default function ScriptGenerator({ config, computers }: ScriptGeneratorPr
         }),
       });
 
+      // Check if response is valid JSON, preventing Unexpected token '<' errors
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error(
+          "Server returned non-JSON response (likely static HTML fallback or 502 Bad Gateway). " +
+          "Please verify that the backend server is fully started and routing requests on port 3000."
+        );
+      }
+
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.error || "Failed to generate scripts");
