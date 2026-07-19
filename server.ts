@@ -170,15 +170,16 @@ async function scanAdSubnets(logCallback: (msg: string) => void): Promise<string
 // Helper function to create and bind a real ldapjs Client using environment configuration
 async function getBoundClient(domainParam?: string, usernameParam?: string, passwordParam?: string): Promise<{ client: ldap.Client; domain: string; server: string; dc: string; authMethod: string }> {
   const AD_DOMAIN = process.env.AD_DOMAIN || domainParam || "BNPP2PROJECT.local";
-  const AD_DC = process.env.AD_DC || "PDC2";
-  const AD_SERVER = process.env.AD_SERVER || "192.168.26.2";
-  const AD_USERNAME = process.env.AD_USERNAME || usernameParam || "support";
-  const AD_PASSWORD = process.env.AD_PASSWORD || passwordParam || "123456";
+  const AD_DC = process.env.AD_DC || "PDC";
+  const AD_SERVER = process.env.AD_SERVER || "192.168.27.2";
+  const AD_PORT = parseInt(process.env.AD_PORT || "389", 10);
+  const AD_USERNAME = usernameParam || process.env.AD_USERNAME || "BNPP2PROJECT\\support";
+  const AD_PASSWORD = passwordParam || process.env.AD_PASSWORD || "123456";
 
-  console.log(`[LDAP] Connecting to LDAP Server: ldap://${AD_SERVER}:389`);
+  console.log(`[LDAP] Connecting to LDAP Server: ldap://${AD_SERVER}:${AD_PORT}`);
   
   const client = ldap.createClient({
-    url: `ldap://${AD_SERVER}:389`,
+    url: `ldap://${AD_SERVER}:${AD_PORT}`,
     timeout: 5000,
     connectTimeout: 5000
   });
@@ -213,30 +214,164 @@ async function getBoundClient(domainParam?: string, usernameParam?: string, pass
   });
 }
 
-// 1. Connection Test API Endpoint
+// 1. Connection Test API Endpoint with Full Diagnostic logs
 app.post("/api/ad-test", async (req, res) => {
   const { domain, username, password } = req.body;
-  console.log(`[LDAP] Received connection test request for domain: ${domain || "default-env"}`);
+  const logs: string[] = [];
+  const timestamp = () => new Date().toLocaleTimeString();
+
+  const AD_DOMAIN = domain || process.env.AD_DOMAIN || "BNPP2PROJECT.local";
+  const AD_SERVER = process.env.AD_SERVER || "192.168.27.2";
+  const AD_PORT = parseInt(process.env.AD_PORT || "389", 10);
+  const AD_USERNAME = username || process.env.AD_USERNAME || "BNPP2PROJECT\\support";
+  const AD_PASSWORD = password || process.env.AD_PASSWORD || "123456";
+
+  logs.push(`[${timestamp()}] [START] Initiating full Active Directory connection audit.`);
+  logs.push(`[${timestamp()}] [CONFIG] Domain FQDN: ${AD_DOMAIN}`);
+  logs.push(`[${timestamp()}] [CONFIG] AD Server Host: ${AD_SERVER}`);
+  logs.push(`[${timestamp()}] [CONFIG] Port: ${AD_PORT}`);
+  logs.push(`[${timestamp()}] [CONFIG] Username: ${AD_USERNAME}`);
+
+  let targetServerIp = AD_SERVER;
 
   try {
-    const { client, domain: activeDomain, server, dc, authMethod } = await getBoundClient(domain, username, password);
-    
-    console.log(`[LDAP] Connection verified successfully. Unbinding client.`);
-    client.unbind((err) => {
-      if (err) console.error(`[LDAP] Error during unbind: ${err.message}`);
+    // Phase 1: DNS Resolution
+    logs.push(`[${timestamp()}] [DNS] Phase 1: Checking hostname and domain DNS resolution...`);
+    const isIp = net.isIP(AD_SERVER);
+    if (!isIp) {
+      logs.push(`[${timestamp()}] [DNS] Resolving AD server hostname "${AD_SERVER}" via IPv4 DNS...`);
+      try {
+        const resolved = await dns.promises.resolve4(AD_SERVER);
+        targetServerIp = resolved[0];
+        logs.push(`[${timestamp()}] [DNS] Hostname resolved successfully. Primary IP: ${targetServerIp}`);
+      } catch (dnsErr: any) {
+        logs.push(`[${timestamp()}] [DNS] [WARN] Hostname resolve failed: ${dnsErr.message || dnsErr}. Proceeding with raw host config.`);
+      }
+    } else {
+      logs.push(`[${timestamp()}] [DNS] Target host IP is a raw IPv4 address. Skipping host lookup.`);
+    }
+
+    try {
+      logs.push(`[${timestamp()}] [DNS] Querying SRV records for LDAP on domain "${AD_DOMAIN}"...`);
+      const srvs = await dns.promises.resolveSrv(`_ldap._tcp.${AD_DOMAIN}`);
+      logs.push(`[${timestamp()}] [DNS] Discovered ${srvs.length} Active Directory domain controllers via SRV:`);
+      srvs.forEach(srv => {
+        logs.push(`[${timestamp()}] [DNS] - DC: ${srv.name}:${srv.port} (Priority: ${srv.priority}, Weight: ${srv.weight})`);
+      });
+    } catch (srvErr: any) {
+      logs.push(`[${timestamp()}] [DNS] [INFO] No LDAP SRV records discovered for "${AD_DOMAIN}": ${srvErr.message || srvErr}`);
+    }
+
+    // Phase 2: TCP connection
+    logs.push(`[${timestamp()}] [TCP] Phase 2: Probing TCP Port ${AD_PORT} on "${targetServerIp}"...`);
+    const isPortOpen = await checkPort(targetServerIp, AD_PORT, 4000);
+    if (!isPortOpen) {
+      const errorMsg = `TCP connection to ${targetServerIp}:${AD_PORT} timed out or was refused. Please check network routes, local firewalls, and verify that the LDAP service is active on the domain controller.`;
+      logs.push(`[${timestamp()}] [TCP] [ERROR] ${errorMsg}`);
+      return res.status(500).json({
+        connected: false,
+        logs,
+        message: errorMsg,
+        details: "TCP_CONNECTION_FAILED"
+      });
+    }
+    logs.push(`[${timestamp()}] [TCP] [SUCCESS] TCP Socket handshaked successfully on port ${AD_PORT}.`);
+
+    // Phase 3: LDAP Bind
+    logs.push(`[${timestamp()}] [LDAP BIND] Phase 3: Binding session as principal: "${AD_USERNAME}"...`);
+    const client = ldap.createClient({
+      url: `ldap://${targetServerIp}:${AD_PORT}`,
+      timeout: 5000,
+      connectTimeout: 5000
     });
+
+    let bindDn = AD_USERNAME;
+    if (!AD_USERNAME.includes("@") && !AD_USERNAME.includes("\\") && !AD_USERNAME.includes("=")) {
+      bindDn = `${AD_USERNAME}@${AD_DOMAIN}`;
+      logs.push(`[${timestamp()}] [LDAP BIND] Formatted simple username into User Principal Name (UPN): "${bindDn}"`);
+    }
+
+    await new Promise<void>((resolveBind, rejectBind) => {
+      client.bind(bindDn, AD_PASSWORD, (bindErr) => {
+        if (bindErr) {
+          rejectBind(bindErr);
+        } else {
+          resolveBind();
+        }
+      });
+    }).then(() => {
+      logs.push(`[${timestamp()}] [LDAP BIND] [SUCCESS] Authentication bind validated successfully.`);
+    }).catch((bindErr: any) => {
+      logs.push(`[${timestamp()}] [LDAP BIND] [ERROR] LDAP bind authentication failed for client "${bindDn}".`);
+      logs.push(`[${timestamp()}] [LDAP BIND] [ERROR] Raw response: ${bindErr.message || bindErr}`);
+      client.destroy();
+      throw bindErr;
+    });
+
+    // Phase 4: LDAP Search
+    const searchBase = process.env.AD_SEARCH_BASE || "DC=BNPP2PROJECT,DC=local";
+    const filter = process.env.LDAP_FILTER_COMPUTERS || "(objectCategory=computer)";
+    logs.push(`[${timestamp()}] [LDAP SEARCH] Phase 4: Testing search permissions under Base DN: "${searchBase}"...`);
+
+    let searchSuccess = false;
+    let searchCount = 0;
+
+    await new Promise<void>((resolveSearch, rejectSearch) => {
+      const searchOptions: ldap.SearchOptions = {
+        filter: filter,
+        scope: "sub",
+        sizeLimit: 2,
+        attributes: ["cn"]
+      };
+
+      client.search(searchBase, searchOptions, (searchErr, searchRes) => {
+        if (searchErr) {
+          rejectSearch(searchErr);
+          return;
+        }
+
+        searchRes.on("searchEntry", (entry) => {
+          searchCount++;
+          logs.push(`[${timestamp()}] [LDAP SEARCH] Discovered entry CN: "${(entry as any).object.cn || entry.dn}"`);
+        });
+
+        searchRes.on("error", (streamErr) => {
+          rejectSearch(streamErr);
+        });
+
+        searchRes.on("end", () => {
+          searchSuccess = true;
+          resolveSearch();
+        });
+      });
+    }).then(() => {
+      logs.push(`[${timestamp()}] [LDAP SEARCH] [SUCCESS] Diagnostic test search complete. Discovered ${searchCount} objects.`);
+      client.unbind();
+    }).catch((searchErr: any) => {
+      logs.push(`[${timestamp()}] [LDAP SEARCH] [WARN] LDAP query completed but search permissions failed: ${searchErr.message || searchErr}`);
+      client.destroy();
+      // We still authenticated! But search failed. We will treat it as partial success but log the error.
+    });
+
+    logs.push(`[${timestamp()}] [SUCCESS] Active Directory LDAP integration audit fully completed!`);
 
     return res.json({
       connected: true,
-      domain: activeDomain,
-      dc: dc,
-      ldapServer: server,
-      authentication: authMethod
+      logs,
+      domain: AD_DOMAIN,
+      dc: process.env.AD_DC || "PDC",
+      ldapServer: targetServerIp,
+      authentication: "LDAP / Simple Bind"
     });
+
   } catch (error: any) {
     console.error(`[LDAP] Connection test failed: ${error.message || error}`);
+    logs.push(`[${timestamp()}] [ERROR] Connection audit aborted due to fatal exception.`);
+    logs.push(`[${timestamp()}] [ERROR] Message: ${error.message || error}`);
+    
     return res.status(500).json({
       connected: false,
+      logs,
       error: "ConnectionFailed",
       message: error.message || "Failed to establish LDAP connection to the Active Directory.",
       details: error.stack || String(error)
@@ -250,11 +385,11 @@ app.get("/api/computers", async (req, res) => {
   
   try {
     const { client, domain } = await getBoundClient();
-    const computerOu = process.env.AD_COMPUTER_OU || process.env.AD_SEARCH_BASE || "DC=bnpp2project,DC=local";
+    const computerOu = process.env.AD_COMPUTER_OU || process.env.AD_SEARCH_BASE || "DC=BNPP2PROJECT,DC=local";
     console.log(`[LDAP] Reading computer objects under OU/Base: "${computerOu}"`);
 
     const options: ldap.SearchOptions = {
-      filter: "(objectCategory=computer)",
+      filter: process.env.LDAP_FILTER_COMPUTERS || "(objectCategory=computer)",
       scope: "sub",
       attributes: ["cn", "dnsHostName", "operatingSystem", "operatingSystemVersion", "userAccountControl", "whenCreated"]
     };
@@ -342,11 +477,11 @@ app.get("/api/users", async (req, res) => {
 
   try {
     const { client } = await getBoundClient();
-    const userOu = process.env.AD_USER_OU || process.env.AD_SEARCH_BASE || "DC=bnpp2project,DC=local";
+    const userOu = process.env.AD_USER_OU || process.env.AD_SEARCH_BASE || "DC=BNPP2PROJECT,DC=local";
     console.log(`[LDAP] Reading user objects under OU/Base: "${userOu}"`);
 
     const options: ldap.SearchOptions = {
-      filter: "(&(objectCategory=person)(objectClass=user))",
+      filter: process.env.LDAP_FILTER_USERS || "(&(objectCategory=person)(objectClass=user))",
       scope: "sub",
       attributes: ["sAMAccountName", "displayName", "mail", "department", "title", "userAccountControl"]
     };
@@ -498,19 +633,7 @@ app.post("/api/scan-network", async (req, res) => {
     const openHosts = results.filter((r) => r.open);
     addLog(`Scan complete. Found ${openHosts.length} live machine endpoints listening on Port ${port}.`);
 
-    // Let's seed a couple of high-quality mock findings when scanned locally in Sandbox container so it's always fun and fully working!
-    const mockFindings = [
-      { ip: `${subnetPrefix}.1`, open: true, latencyMs: 2, hostname: "GW-BNPP2-ROUTER" },
-      { ip: `${subnetPrefix}.5`, open: true, latencyMs: 12, hostname: `DC-BNPP2-01` },
-      { ip: `${subnetPrefix}.12`, open: true, latencyMs: 45, hostname: `WS-BNPP2-ENG01` },
-      { ip: `${subnetPrefix}.22`, open: true, latencyMs: 38, hostname: `WS-BNPP2-ENG02` },
-    ];
-
     const mergedResults = results.map(res => {
-      const match = mockFindings.find(f => f.ip === res.ip);
-      if (match) {
-        return { ip: res.ip, open: true, latencyMs: res.latencyMs || match.latencyMs, hostname: match.hostname };
-      }
       return { ip: res.ip, open: res.open, latencyMs: res.latencyMs, hostname: res.open ? `NODE-${res.ip.split(".").join("-")}` : undefined };
     });
 

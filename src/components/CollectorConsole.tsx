@@ -118,10 +118,9 @@ export default function CollectorConsole({
 
     const timestamp = () => new Date().toLocaleTimeString();
     const initialLogs = [
-      `[${timestamp()}] [START] Initiating Active Directory LDAP Session...`,
-      `[${timestamp()}] [CONFIG] Domain: ${adDomain || "BNPP2PROJECT.local"}`,
-      `[${timestamp()}] [CONFIG] DC Controller: pdc2.bnpp2project.local`,
-      `[${timestamp()}] [LDAP] Sending connection request to backend server...`
+      `[${timestamp()}] [START] Sending connection request to backend validator...`,
+      `[${timestamp()}] [CONFIG] Domain FQDN: ${adDomain || "BNPP2PROJECT.local"}`,
+      `[${timestamp()}] [CONFIG] User Account: ${adUsername || "support"}`
     ];
     setAdLogs(initialLogs);
 
@@ -136,30 +135,28 @@ export default function CollectorConsole({
         }),
       });
 
-      const contentType = response.headers.get("content-type");
-      if (!contentType || !contentType.includes("application/json")) {
-        const text = await response.text();
-        throw new Error(`Server returned non-JSON response. Details: ${text.slice(0, 200)}`);
+      let testData: any = null;
+      try {
+        const contentType = response.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          testData = await response.json();
+        }
+      } catch (e) {
+        console.error("Failed to parse response JSON:", e);
       }
 
-      const testData = await response.json();
-
-      if (!response.ok || !testData.connected) {
-        throw new Error(testData.message || testData.details || "Failed to connect to Active Directory server.");
+      if (testData && Array.isArray(testData.logs)) {
+        setAdLogs(testData.logs);
+      } else {
+        setAdLogs(prev => [...prev, `[${timestamp()}] Failed to receive diagnostic logs from server.`]);
       }
 
-      const successLogs = [
-        ...initialLogs,
-        `[${timestamp()}] [LDAP] Successfully connected and authenticated!`,
-        `[${timestamp()}] [AUTH] Security mechanism: ${testData.authentication || "Kerberos"}`,
-        `[${timestamp()}] [QUERY] Bound successfully as: ${adUsername}`,
-        `[${timestamp()}] [QUERY] Domain Controller: ${testData.dc || "PDC2"}`,
-        `[${timestamp()}] [QUERY] LDAP Server Host IP: ${testData.ldapServer || "192.168.26.2"}`,
-        `[${timestamp()}] [QUERY] Requesting computers list...`
-      ];
-      setAdLogs(successLogs);
+      if (!response.ok || !testData || !testData.connected) {
+        const errMessage = (testData && (testData.message || testData.details)) || "Failed to establish Active Directory session.";
+        throw new Error(errMessage);
+      }
 
-      addLog(`Querying active computers and users from Active Directory...`);
+      addLog(`Querying Active Directory computer objects and enabled users...`);
       
       const [compsRes, usersRes] = await Promise.all([
         fetch("/api/computers"),
@@ -167,13 +164,13 @@ export default function CollectorConsole({
       ]);
 
       if (!compsRes.ok) {
-        const errJson = await compsRes.json().catch(() => ({ message: "Computer fetch failed" }));
-        throw new Error(errJson.message || "Failed to fetch computers from Active Directory.");
+        const errJson = await compsRes.json().catch(() => ({ message: "Computer accounts read failed." }));
+        throw new Error(errJson.message || "Failed to read computer objects.");
       }
 
       if (!usersRes.ok) {
-        const errJson = await usersRes.json().catch(() => ({ message: "User fetch failed" }));
-        throw new Error(errJson.message || "Failed to fetch users from Active Directory.");
+        const errJson = await usersRes.json().catch(() => ({ message: "User accounts read failed." }));
+        throw new Error(errJson.message || "Failed to read user objects.");
       }
 
       const computers = await compsRes.json();
@@ -181,27 +178,29 @@ export default function CollectorConsole({
 
       setAdLogs(prev => [
         ...prev,
-        `[${timestamp()}] [QUERY] Real-time Computer accounts fetched: ${computers.length}`,
-        `[${timestamp()}] [QUERY] Real-time Enabled User accounts fetched: ${users.length}`,
-        `[${timestamp()}] [SUCCESS] Active Directory LDAP connector verified successfully.`
+        `[${timestamp()}] [QUERY] Found ${computers.length} computer accounts in directory.`,
+        `[${timestamp()}] [QUERY] Found ${users.length} active user objects.`,
+        `[${timestamp()}] [SUCCESS] Active Directory integration validated and fully active!`
       ]);
 
       setAdStatus("connected");
       setAdFetchedComputers(computers);
       setAdFetchedUsers(users);
-      addLog(`Active Directory integration verified successfully for domain: ${adDomain}. ${computers.length} computers, ${users.length} users imported.`);
+      addLog(`Active Directory integration verified successfully. Discovered ${computers.length} computers and ${users.length} users.`);
 
     } catch (err: any) {
       console.error("Active Directory connection failed:", err.message || err);
       const errMsg = err.message || String(err);
       setAdError(errMsg);
       setAdStatus("failed");
-      setAdLogs(prev => [
-        ...prev,
-        `[${timestamp()}] [ERROR] Active Directory LDAP integration failed:`,
-        `[${timestamp()}] [ERROR] ${errMsg}`,
-        `[${timestamp()}] [ERROR] Clear browser cache or check your network/LDAP server routing.`
-      ]);
+      setAdLogs(prev => {
+        const finalLogs = [...prev];
+        if (!finalLogs.some(l => l.includes("[ERROR]"))) {
+          finalLogs.push(`[${timestamp()}] [ERROR] Active Directory LDAP integration failed:`);
+          finalLogs.push(`[${timestamp()}] [ERROR] ${errMsg}`);
+        }
+        return finalLogs;
+      });
       addLog(`Active Directory integration failed: ${errMsg}`);
     }
   };
@@ -214,6 +213,7 @@ export default function CollectorConsole({
     setSubnetScanLogs([]);
     setSubnetError(null);
     addLog(`Starting active port scan sweep on subnet...`);
+    const timestamp = () => new Date().toLocaleTimeString();
 
     try {
       const response = await fetch("/api/scan-network", {
@@ -226,10 +226,10 @@ export default function CollectorConsole({
         }),
       });
 
-      // Check if response is JSON, otherwise trigger fallback
       const contentType = response.headers.get("content-type");
       if (!response.ok || !contentType || !contentType.includes("application/json")) {
-        throw new Error("Server returned non-JSON response (likely static HTML fallback or 502 Bad Gateway)");
+        const text = await response.text();
+        throw new Error(`Server returned non-JSON response. Details: ${text.slice(0, 200)}`);
       }
 
       const data = await response.json();
@@ -239,55 +239,18 @@ export default function CollectorConsole({
         setSubnetScanResults(data.results || []);
         addLog(`Network subnet scan complete. Live nodes mapped to console.`);
       } else {
-        addLog(`Subnet scan failed to complete.`);
+        throw new Error(data.logs?.join("\n") || "Subnet scan failed to complete.");
       }
     } catch (err: any) {
-      console.warn("Subnet scan API connection failed, initiating high-fidelity client-side fallback emulator:", err.message || err);
-      setSubnetError(err.message || String(err));
-      
-      const parseIp = (ip: string) => ip.split(".").map(Number);
-      const startParts = parseIp(scanStartIp);
-      const endParts = parseIp(scanEndIp);
-      const subnetPrefix = startParts.length === 4 ? startParts.slice(0, 3).join(".") : "192.168.26";
-      const startNum = startParts.length === 4 ? startParts[3] : 1;
-      const endNum = endParts.length === 4 ? endParts[3] : 25;
-
-      const timestamps = () => new Date().toLocaleTimeString();
-      const fallbackLogs = [
-        `[${timestamps()}] Starting active port scan sweep on range: ${scanStartIp} to ${scanEndIp} on target Port: ${scanPort}...`,
-        `[${timestamps()}] Broadcasting synchronous port connections to ${Math.max(1, endNum - startNum + 1)} endpoints...`
-      ];
-
-      // Simulated node detections in range
-      const mockDetections: { [key: string]: string } = {
-        "1": "GW-BNPP2-ROUTER",
-        "5": "DC-BNPP2-01",
-        "12": "WS-BNPP2-ENG01",
-        "22": "WS-BNPP2-ENG02"
-      };
-
-      const fallbackResults = [];
-      let detectedCount = 0;
-
-      for (let i = startNum; i <= Math.min(endNum, startNum + 63); i++) {
-        const currentIp = `${subnetPrefix}.${i}`;
-        const hostId = i.toString();
-        const isOpen = Object.keys(mockDetections).includes(hostId);
-        if (isOpen) detectedCount++;
-        fallbackResults.push({
-          ip: currentIp,
-          open: isOpen,
-          latencyMs: isOpen ? Math.floor(Math.random() * 38) + 3 : 0,
-          hostname: isOpen ? mockDetections[hostId] : undefined
-        });
-      }
-
-      fallbackLogs.push(`[${timestamps()}] Scan complete. Found ${detectedCount} live machine endpoints listening on Port ${scanPort}.`);
-
-      await new Promise(r => setTimeout(r, 1200));
-      setSubnetScanLogs(fallbackLogs);
-      setSubnetScanResults(fallbackResults);
-      addLog(`[EMULATED] Network subnet scan complete. Live nodes mapped to console.`);
+      console.error("Subnet scan failed:", err.message || err);
+      const errMsg = err.message || String(err);
+      setSubnetError(errMsg);
+      setSubnetScanLogs(prev => [
+        ...prev,
+        `[${timestamp()}] [ERROR] Subnet scan failed:`,
+        `[${timestamp()}] [ERROR] ${errMsg}`
+      ]);
+      addLog(`Subnet scan failed: ${errMsg}`);
     } finally {
       setIsSubnetScanning(false);
     }
