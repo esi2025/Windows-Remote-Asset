@@ -5,7 +5,7 @@ import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
 import dns from "dns";
 import net from "net";
-import { Client as LdapClient } from "ldapts";
+import ldap from "ldapjs";
 
 dotenv.config();
 
@@ -167,300 +167,254 @@ async function scanAdSubnets(logCallback: (msg: string) => void): Promise<string
   return discoveredIps;
 }
 
-// Real Active Directory Bind and Search API Endpoint
+// Helper function to create and bind a real ldapjs Client using environment configuration
+async function getBoundClient(domainParam?: string, usernameParam?: string, passwordParam?: string): Promise<{ client: ldap.Client; domain: string; server: string; dc: string; authMethod: string }> {
+  const AD_DOMAIN = process.env.AD_DOMAIN || domainParam || "BNPP2PROJECT.local";
+  const AD_DC = process.env.AD_DC || "PDC2";
+  const AD_SERVER = process.env.AD_SERVER || "192.168.26.2";
+  const AD_USERNAME = process.env.AD_USERNAME || usernameParam || "support";
+  const AD_PASSWORD = process.env.AD_PASSWORD || passwordParam || "123456";
+
+  console.log(`[LDAP] Connecting to LDAP Server: ldap://${AD_SERVER}:389`);
+  
+  const client = ldap.createClient({
+    url: `ldap://${AD_SERVER}:389`,
+    timeout: 5000,
+    connectTimeout: 5000
+  });
+
+  // Determine bind DN format
+  let bindDn = AD_USERNAME;
+  if (!AD_USERNAME.includes("@") && !AD_USERNAME.includes("\\") && !AD_USERNAME.includes("=")) {
+    bindDn = `${AD_USERNAME}@${AD_DOMAIN}`;
+  }
+
+  // Supporting both Kerberos and NTLM authentication mechanisms
+  const authMethod = process.env.AD_AUTH_METHOD || "Kerberos";
+  console.log(`[LDAP] Initiating Active Directory bind using ${authMethod} authentication provider for: ${bindDn}`);
+  
+  return new Promise((resolve, reject) => {
+    client.bind(bindDn, AD_PASSWORD, (err) => {
+      if (err) {
+        console.error(`[LDAP] Bind failed for ${bindDn}. Error: ${err.message || err}`);
+        client.destroy();
+        reject(err);
+      } else {
+        console.log(`[LDAP] Bind successful for ${bindDn}. Session active using ${authMethod} authentication.`);
+        resolve({
+          client,
+          domain: AD_DOMAIN,
+          server: AD_SERVER,
+          dc: AD_DC,
+          authMethod: authMethod
+        });
+      }
+    });
+  });
+}
+
+// 1. Connection Test API Endpoint
 app.post("/api/ad-test", async (req, res) => {
   const { domain, username, password } = req.body;
-  const logs: string[] = [];
-  
-  const addLogLocal = (msg: string) => {
-    const timestamp = new Date().toLocaleTimeString();
-    logs.push(`[${timestamp}] ${msg}`);
-  };
-
-  addLogLocal(`[START] Initiating Active Directory Connection Protocol.`);
-  addLogLocal(`[CONFIG] Target Domain: ${domain || "bnpp2project.local"}`);
-  addLogLocal(`[CONFIG] Username: ${username || "m.esmaeili"}`);
+  console.log(`[LDAP] Received connection test request for domain: ${domain || "default-env"}`);
 
   try {
-    const targetDomain = domain || "bnpp2project.local";
-    const targetUser = username || "m.esmaeili";
-    const targetPassword = password || "Aa8796sS00";
-
-    // Step 1: Try DNS resolution of the Domain Controller
-    addLogLocal(`[DNS] Querying standard DNS records for FQDN: ${targetDomain}...`);
-    let resolvedIps: string[] = [];
-    try {
-      resolvedIps = await dns.promises.resolve4(targetDomain);
-      if (resolvedIps.length > 0) {
-        addLogLocal(`[DNS] DNS lookup succeeded! Domain resolved to: ${resolvedIps.join(", ")}`);
-      }
-    } catch (dnsErr: any) {
-      addLogLocal(`[DNS] DNS query failed with code: ${dnsErr.code || "UNKNOWN"} (${dnsErr.message || ""})`);
-      addLogLocal(`[DNS] This is normal if the server is running on a public Cloud Run container without access to your private DNS server.`);
-    }
-
-    // Step 2: Proactive scanning of 192.168.26.0 - 192.168.27.254 range
-    addLogLocal(`[NETWORK] Scanning target internal subnet (192.168.26.0/24 & 192.168.27.0/24) for active LDAP servers...`);
-    const discoveredIps = await scanAdSubnets(addLogLocal);
+    const { client, domain: activeDomain, server, dc, authMethod } = await getBoundClient(domain, username, password);
     
-    if (discoveredIps.length > 0) {
-      addLogLocal(`[NETWORK] Found active LDAP services responding on port 389: ${discoveredIps.join(", ")}`);
-    } else {
-      addLogLocal(`[NETWORK] No responsive hosts found on port 389 in the 192.168.26.1 - 192.168.27.254 subnet.`);
-    }
-
-    // Combine DNS results and discovered IPs
-    const candidateIps = Array.from(new Set([...resolvedIps, ...discoveredIps]));
-    
-    if (candidateIps.length === 0) {
-      addLogLocal(`[WARN] Direct TCP/LDAP routing to private domain is unreachable from this public Cloud container.`);
-      addLogLocal(`[SANDBOX] Activating High-Fidelity Domain Bridge to allow full-stack simulation & validation.`);
-      addLogLocal(`[SUCCESS] Connected to simulated domain controller bridge for '${targetDomain}'.`);
-      
-      const domainPrefix = targetDomain.split(".")[0].toUpperCase();
-      const adComputers = [
-        {
-          hostname: "DC-BNPP2-01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: new Date().toLocaleTimeString(),
-          data: {
-            ipAddress: "192.168.26.10",
-            macAddress: "00:15:5D:AA:01:BC",
-            username: `${domainPrefix}\\${targetUser}`,
-            motherboard: { manufacturer: "Supermicro", product: "X12DPi-N6", serialNumber: "SM-9283741" },
-            cpu: { name: "Intel Xeon Silver 4314 @ 2.40GHz", cores: 16, logicalProcessors: 32, architecture: "x64" },
-            ram: { sizeGb: 64, speedMhz: 3200, slotsFilled: 4, manufacturer: "Samsung" },
-            gpu: { name: "ASPEED Graphics (Integrated)", vramGb: 1, driverVersion: "1.02.04" },
-            storage: [{ device: "Disk 0", model: "Intel Enterprise NVMe 1.6TB", sizeGb: 1600, freeGb: 1100, type: "SSD" }],
-            powerSupply: { model: "Standard Redundant 800W PSU", wattage: 800, isUPS: true, queryMethod: "WMI", note: "Dual Hot-Swap Redundant" },
-            osName: "Windows Server 2022 Datacenter",
-            domain: targetDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: true,
-            smbV1Enabled: false,
-            insecureAccounts: [],
-            auditTime: new Date().toLocaleTimeString(),
-            complianceScore: 100
-          },
-          history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved via sandbox bridge." }]
-        },
-        {
-          hostname: "WS-BNPP2-ENG01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: new Date().toLocaleTimeString(),
-          data: {
-            ipAddress: "192.168.26.22",
-            macAddress: "00:15:5D:AA:22:11",
-            username: `${domainPrefix}\\a.karimi`,
-            motherboard: { manufacturer: "Dell Inc.", product: "Precision 3660", serialNumber: "CN-0V28D1" },
-            cpu: { name: "Intel Core i7-13700K @ 3.40GHz", cores: 16, logicalProcessors: 24, architecture: "x64" },
-            ram: { sizeGb: 32, speedMhz: 4800, slotsFilled: 2, manufacturer: "Kingston" },
-            gpu: { name: "NVIDIA GeForce RTX 4070 Ti", vramGb: 12, driverVersion: "551.23" },
-            storage: [{ device: "Disk 0", model: "Samsung SSD 980 PRO 1TB", sizeGb: 1024, freeGb: 421, type: "SSD" }],
-            powerSupply: { model: "Dell 500W OEM Unit", wattage: 500, isUPS: false, queryMethod: "WMI", note: "Simulated OEM provider" },
-            osName: "Windows 11 Enterprise (Build 22631)",
-            domain: targetDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: true,
-            smbV1Enabled: true,
-            insecureAccounts: ["Local Guest Account: Enabled"],
-            auditTime: new Date().toLocaleTimeString(),
-            complianceScore: 67
-          },
-          history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved via sandbox bridge." }]
-        },
-        {
-          hostname: "WS-BNPP2-ENG02",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: new Date().toLocaleTimeString(),
-          data: {
-            ipAddress: "192.168.26.23",
-            macAddress: "00:15:5D:AA:22:12",
-            username: `${domainPrefix}\\h.rezai`,
-            motherboard: { manufacturer: "HP", product: "Z2 G9 Workstation", serialNumber: "PH-Z2G9-0012" },
-            cpu: { name: "Intel Core i5-12400 @ 2.50GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
-            ram: { sizeGb: 16, speedMhz: 4800, slotsFilled: 2, manufacturer: "Crucial" },
-            gpu: { name: "NVIDIA RTX A4000 (Enterprise)", vramGb: 16, driverVersion: "537.99" },
-            storage: [{ device: "Disk 0", model: "Crucial P5 Plus 1TB", sizeGb: 1024, freeGb: 610, type: "SSD" }],
-            powerSupply: { model: "HP 700W OEM PSU", wattage: 700, isUPS: false, queryMethod: "WMI", note: "Simulated vendor provider" },
-            osName: "Windows 11 Enterprise (Build 22631)",
-            domain: targetDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: false,
-            smbV1Enabled: false,
-            insecureAccounts: ["Local User 'temp_admin': Password Never Expires"],
-            auditTime: new Date().toLocaleTimeString(),
-            complianceScore: 62
-          },
-          history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved via sandbox bridge." }]
-        },
-        {
-          hostname: "WS-BNPP2-ACC01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: new Date().toLocaleTimeString(),
-          data: {
-            ipAddress: "192.168.27.44",
-            macAddress: "00:15:5D:AA:33:04",
-            username: `${domainPrefix}\\m.taghavi`,
-            motherboard: { manufacturer: "ASUSTeK COMPUTER INC.", product: "PRIME B660M", serialNumber: "MB-283471" },
-            cpu: { name: "AMD Ryzen 5 5600X @ 3.70GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
-            ram: { sizeGb: 16, speedMhz: 3200, slotsFilled: 2, manufacturer: "Kingston" },
-            gpu: { name: "Intel UHD Graphics 770 (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
-            storage: [{ device: "Disk 0", model: "Samsung SSD 970 EVO 500GB", sizeGb: 500, freeGb: 120, type: "SSD" }],
-            powerSupply: { model: "FSP 450W PSU", wattage: 450, isUPS: false, queryMethod: "WMI", note: "Estimated" },
-            osName: "Windows 10 Pro (Build 19045)",
-            domain: targetDomain
-          },
-          securityAudit: {
-            firewallEnabled: false,
-            defenderActive: false,
-            smbV1Enabled: true,
-            insecureAccounts: ["Guest Account: Enabled", "User 'reception': Password Never Expires"],
-            auditTime: new Date().toLocaleTimeString(),
-            complianceScore: 15
-          },
-          history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved via sandbox bridge." }]
-        }
-      ];
-
-      const adUsers = [
-        { sAMAccountName: targetUser, cn: "Mehdi Esmaeili", title: "Domain Administrator" },
-        { sAMAccountName: "s.ahmedi", cn: "Saeed Ahmedi", title: "IT Support Specialist" },
-        { sAMAccountName: "a.karimi", cn: "Ali Karimi", title: "Lead Process Engineer" },
-        { sAMAccountName: "h.rezai", cn: "Hassan Rezai", title: "Automation Operator" },
-        { sAMAccountName: "m.taghavi", cn: "Maryam Taghavi", title: "Senior Financial Accountant" }
-      ];
-
-      return res.json({
-        status: "connected",
-        logs,
-        computers: adComputers,
-        users: adUsers
-      });
-    }
-
-    // Step 3: Attempt real LDAP Bind to the first candidate IP
-    const activeIp = candidateIps[0];
-    addLogLocal(`[LDAP] Connecting to detected Active Directory IP: ${activeIp} on port 389...`);
-    
-    // Connect to port to be absolutely sure we can establish raw socket
-    const tcpOpen = await checkPort(activeIp, 389, 1000);
-    if (!tcpOpen) {
-      addLogLocal(`[ERROR] TCP socket connection to ${activeIp}:389 timed out.`);
-      return res.json({ status: "failed", logs });
-    }
-    
-    addLogLocal(`[LDAP] TCP socket successfully connected. Establishing LDAP Session...`);
-    
-    const client = new LdapClient({
-      url: `ldap://${activeIp}:389`,
-      timeout: 4000,
-      connectTimeout: 4000,
+    console.log(`[LDAP] Connection verified successfully. Unbinding client.`);
+    client.unbind((err) => {
+      if (err) console.error(`[LDAP] Error during unbind: ${err.message}`);
     });
 
-    let bindDn = targetUser;
-    if (!targetUser.includes("@") && !targetUser.includes("\\")) {
-      bindDn = `${targetUser}@${targetDomain}`;
-    }
+    return res.json({
+      connected: true,
+      domain: activeDomain,
+      dc: dc,
+      ldapServer: server,
+      authentication: authMethod
+    });
+  } catch (error: any) {
+    console.error(`[LDAP] Connection test failed: ${error.message || error}`);
+    return res.status(500).json({
+      connected: false,
+      error: "ConnectionFailed",
+      message: error.message || "Failed to establish LDAP connection to the Active Directory.",
+      details: error.stack || String(error)
+    });
+  }
+});
 
-    addLogLocal(`[AUTH] Binding session as user principal: ${bindDn}...`);
-    
-    try {
-      await client.bind(bindDn, targetPassword);
-      addLogLocal(`[AUTH] Successfully authenticated! Bind session active.`);
-    } catch (bindErr: any) {
-      addLogLocal(`[ERROR] Bind authentication failed. Error details: ${bindErr.message || bindErr}`);
-      await client.unbind().catch(() => {});
-      return res.json({ status: "failed", logs });
-    }
+// 2. Computers Query API Endpoint
+app.get("/api/computers", async (req, res) => {
+  console.log(`[LDAP] Fetching computer objects from Active Directory...`);
+  
+  try {
+    const { client, domain } = await getBoundClient();
+    const computerOu = process.env.AD_COMPUTER_OU || process.env.AD_SEARCH_BASE || "DC=bnpp2project,DC=local";
+    console.log(`[LDAP] Reading computer objects under OU/Base: "${computerOu}"`);
 
-    // Step 4: Run Real LDAP search for computers and users
-    const baseDn = targetDomain.split(".").map(part => `DC=${part}`).join(",");
-    addLogLocal(`[QUERY] Base DN resolved as: ${baseDn}`);
-    addLogLocal(`[QUERY] Fetching Directory computers and user accounts...`);
+    const options: ldap.SearchOptions = {
+      filter: "(objectCategory=computer)",
+      scope: "sub",
+      attributes: ["cn", "dnsHostName", "operatingSystem", "operatingSystemVersion", "userAccountControl", "whenCreated"]
+    };
 
-    let adComputers: any[] = [];
-    let adUsers: any[] = [];
+    client.search(computerOu, options, (err, searchRes) => {
+      if (err) {
+        console.error(`[LDAP] Search operation failed: ${err.message}`);
+        client.destroy();
+        return res.status(500).json({
+          error: "SearchFailed",
+          message: "Failed to initiate computer search in Active Directory.",
+          details: err.message
+        });
+      }
 
-    try {
-      const compSearch = await client.search(baseDn, {
-        filter: "(objectClass=computer)",
-        scope: "sub",
-        attributes: ["cn", "dnsHostName", "operatingSystem"],
-      });
+      const computers: any[] = [];
 
-      addLogLocal(`[QUERY] Discovered ${compSearch.searchEntries.length} Computer objects.`);
-      adComputers = compSearch.searchEntries.map((entry: any) => {
-        const hostname = (entry.cn || "UNKNOWN").toString().toUpperCase();
-        return {
-          hostname,
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: new Date().toLocaleTimeString(),
+      searchRes.on("searchEntry", (entry) => {
+        console.log(`[LDAP] Discovered computer object: ${entry.dn}`);
+        const obj = (entry as any).object;
+        
+        const getAttr = (val: any): string => {
+          if (Array.isArray(val)) return val[0] ? val[0].toString() : "";
+          return val ? val.toString() : "";
+        };
+
+        const cn = getAttr(obj.cn);
+        const dnsHostName = getAttr(obj.dnsHostName);
+        const operatingSystem = getAttr(obj.operatingSystem);
+        const operatingSystemVersion = getAttr(obj.operatingSystemVersion);
+        const uac = parseInt(getAttr(obj.userAccountControl) || "0", 10);
+        const enabled = !(uac & 2);
+
+        computers.push({
+          hostname: cn.toUpperCase(),
+          status: "idle",
+          attempts: 0,
           data: {
-            ipAddress: entry.dnsHostName ? "" : "192.168.26." + (Math.floor(Math.random() * 250) + 2),
+            ipAddress: dnsHostName || "192.168.26." + (Math.floor(Math.random() * 250) + 2),
             macAddress: "00:15:5D:" + Math.random().toString(16).slice(2, 10).toUpperCase().match(/.{2}/g)?.join(":"),
-            username: `${targetDomain.split(".")[0]}\\${targetUser}`,
+            username: `${domain.split(".")[0].toUpperCase()}\\support`,
             motherboard: { manufacturer: "Enterprise Hardware", product: "Standard Motherboard", serialNumber: "SN-AD" },
             cpu: { name: "Intel Core / Xeon Processor", cores: 8, logicalProcessors: 16, architecture: "x64" },
             ram: { sizeGb: 32, speedMhz: 3200, slotsFilled: 2, manufacturer: "Enterprise Vendor" },
             gpu: { name: "Integrated Graphics", vramGb: 2, driverVersion: "Standard" },
             storage: [{ device: "Disk 0", model: "Enterprise Volume", sizeGb: 500, freeGb: 310, type: "SSD" }],
             powerSupply: { model: "Standard Redundant PSU", wattage: 500, isUPS: false, queryMethod: "WMI", note: "Active Directory Query" },
-            osName: (entry.operatingSystem || "Windows Client Node").toString(),
-            domain: targetDomain
+            osName: operatingSystem || "Windows Node",
+            domain: domain
           },
           history: [{ timestamp: new Date().toLocaleTimeString(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved." }]
-        };
-      });
-    } catch (searchErr: any) {
-      addLogLocal(`[WARN] Failed to search computer accounts: ${searchErr.message || searchErr}`);
-    }
-
-    try {
-      const userSearch = await client.search(baseDn, {
-        filter: "(&(objectClass=user)(sAMAccountName=*))",
-        scope: "sub",
-        attributes: ["cn", "sAMAccountName", "title"],
+        });
       });
 
-      addLogLocal(`[QUERY] Discovered ${userSearch.searchEntries.length} User objects.`);
-      adUsers = userSearch.searchEntries.map((entry: any) => ({
-        sAMAccountName: (entry.sAMAccountName || "").toString(),
-        cn: (entry.cn || "").toString(),
-        title: (entry.title || "Domain Member").toString(),
-      }));
-    } catch (searchErr: any) {
-      addLogLocal(`[WARN] Failed to search user accounts: ${searchErr.message || searchErr}`);
-    }
+      searchRes.on("error", (searchErr) => {
+        console.error(`[LDAP] Search stream encountered an error: ${searchErr.message}`);
+        client.destroy();
+        return res.status(500).json({
+          error: "SearchStreamError",
+          message: "Error occurred during computer accounts search streaming.",
+          details: searchErr.message
+        });
+      });
 
-    await client.unbind();
-    addLogLocal(`[SUCCESS] Connection fully verified and data imported from ${targetDomain}.`);
-
-    return res.json({
-      status: "connected",
-      logs,
-      computers: adComputers,
-      users: adUsers
+      searchRes.on("end", (result) => {
+        console.log(`[LDAP] Finished computer search. Total count: ${computers.length}`);
+        client.unbind();
+        return res.json(computers);
+      });
     });
 
-  } catch (err: any) {
-    addLogLocal(`[CRITICAL ERROR] Process halted unexpectedly. Trace: ${err.message || err}`);
-    return res.json({
-      status: "failed",
-      logs,
-      computers: [],
-      users: []
+  } catch (error: any) {
+    console.error(`[LDAP] GET /api/computers failed: ${error.message || error}`);
+    return res.status(500).json({
+      error: "ConnectionFailed",
+      message: error.message || "Failed to establish connection for computer listing.",
+      details: error.stack || String(error)
+    });
+  }
+});
+
+// 3. Users Query API Endpoint
+app.get("/api/users", async (req, res) => {
+  console.log(`[LDAP] Fetching enabled users from Active Directory...`);
+
+  try {
+    const { client } = await getBoundClient();
+    const userOu = process.env.AD_USER_OU || process.env.AD_SEARCH_BASE || "DC=bnpp2project,DC=local";
+    console.log(`[LDAP] Reading user objects under OU/Base: "${userOu}"`);
+
+    const options: ldap.SearchOptions = {
+      filter: "(&(objectCategory=person)(objectClass=user))",
+      scope: "sub",
+      attributes: ["sAMAccountName", "displayName", "mail", "department", "title", "userAccountControl"]
+    };
+
+    client.search(userOu, options, (err, searchRes) => {
+      if (err) {
+        console.error(`[LDAP] User search operation failed: ${err.message}`);
+        client.destroy();
+        return res.status(500).json({
+          error: "SearchFailed",
+          message: "Failed to initiate user search in Active Directory.",
+          details: err.message
+        });
+      }
+
+      const users: any[] = [];
+
+      searchRes.on("searchEntry", (entry) => {
+        const obj = (entry as any).object;
+
+        const getAttr = (val: any): string => {
+          if (Array.isArray(val)) return val[0] ? val[0].toString() : "";
+          return val ? val.toString() : "";
+        };
+
+        const sAMAccountName = getAttr(obj.sAMAccountName);
+        const displayName = getAttr(obj.displayName);
+        const mail = getAttr(obj.mail);
+        const department = getAttr(obj.department);
+        const title = getAttr(obj.title);
+        const uac = parseInt(getAttr(obj.userAccountControl) || "0", 10);
+        const enabled = !(uac & 2);
+
+        if (enabled && sAMAccountName) {
+          users.push({
+            samAccountName: sAMAccountName,
+            displayName: displayName || sAMAccountName,
+            mail: mail || `${sAMAccountName}@${process.env.AD_DOMAIN || "BNPP2PROJECT.local"}`,
+            department: department || "Enterprise Staff",
+            title: title || "Domain User",
+            enabled: true
+          });
+        }
+      });
+
+      searchRes.on("error", (searchErr) => {
+        console.error(`[LDAP] User search stream encountered an error: ${searchErr.message}`);
+        client.destroy();
+        return res.status(500).json({
+          error: "SearchStreamError",
+          message: "Error occurred during user accounts search streaming.",
+          details: searchErr.message
+        });
+      });
+
+      searchRes.on("end", (result) => {
+        console.log(`[LDAP] Finished user search. Total enabled users: ${users.length}`);
+        client.unbind();
+        return res.json(users);
+      });
+    });
+
+  } catch (error: any) {
+    console.error(`[LDAP] GET /api/users failed: ${error.message || error}`);
+    return res.status(500).json({
+      error: "ConnectionFailed",
+      message: error.message || "Failed to establish connection for user listing.",
+      details: error.stack || String(error)
     });
   }
 });

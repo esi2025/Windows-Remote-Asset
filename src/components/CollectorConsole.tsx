@@ -114,7 +114,16 @@ export default function CollectorConsole({
     setAdFetchedUsers([]);
     setAdError(null);
     
-    addLog(`Initiating Active Directory query on domain: ${adDomain}...`);
+    addLog(`Initiating connection test to Active Directory domain: ${adDomain}...`);
+
+    const timestamp = () => new Date().toLocaleTimeString();
+    const initialLogs = [
+      `[${timestamp()}] [START] Initiating Active Directory LDAP Session...`,
+      `[${timestamp()}] [CONFIG] Domain: ${adDomain || "BNPP2PROJECT.local"}`,
+      `[${timestamp()}] [CONFIG] DC Controller: pdc2.bnpp2project.local`,
+      `[${timestamp()}] [LDAP] Sending connection request to backend server...`
+    ];
+    setAdLogs(initialLogs);
 
     try {
       const response = await fetch("/api/ad-test", {
@@ -127,179 +136,73 @@ export default function CollectorConsole({
         }),
       });
 
-      // Check if response is JSON, otherwise trigger the fallback
       const contentType = response.headers.get("content-type");
-      if (!response.ok || !contentType || !contentType.includes("application/json")) {
-        throw new Error("Server returned non-JSON response (likely static HTML fallback or 502 Bad Gateway)");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await response.text();
+        throw new Error(`Server returned non-JSON response. Details: ${text.slice(0, 200)}`);
       }
 
-      const data = await response.json();
-      setAdLogs(data.logs || []);
+      const testData = await response.json();
 
-      if (data.status === "connected") {
-        setAdStatus("connected");
-        setAdFetchedComputers(data.computers || []);
-        setAdFetchedUsers(data.users || []);
-        addLog(`Active Directory integration verified successfully for domain: ${adDomain}`);
-      } else {
-        setAdStatus("failed");
-        addLog(`Active Directory integration failed. Detailed network logs printed in LDAP Terminal.`);
+      if (!response.ok || !testData.connected) {
+        throw new Error(testData.message || testData.details || "Failed to connect to Active Directory server.");
       }
-    } catch (err: any) {
-      console.warn("Active Directory API connection failed, initiating high-fidelity client-side fallback emulator:", err.message || err);
-      setAdError(err.message || String(err));
+
+      const successLogs = [
+        ...initialLogs,
+        `[${timestamp()}] [LDAP] Successfully connected and authenticated!`,
+        `[${timestamp()}] [AUTH] Security mechanism: ${testData.authentication || "Kerberos"}`,
+        `[${timestamp()}] [QUERY] Bound successfully as: ${adUsername}`,
+        `[${timestamp()}] [QUERY] Domain Controller: ${testData.dc || "PDC2"}`,
+        `[${timestamp()}] [QUERY] LDAP Server Host IP: ${testData.ldapServer || "192.168.26.2"}`,
+        `[${timestamp()}] [QUERY] Requesting computers list...`
+      ];
+      setAdLogs(successLogs);
+
+      addLog(`Querying active computers and users from Active Directory...`);
       
-      // Simulate real LDAP protocol handshake logs for a flawless user experience
-      const timestamps = () => new Date().toLocaleTimeString();
-      const fallbackLogs = [
-        `[${timestamps()}] [START] Initiating Active Directory Connection Protocol.`,
-        `[${timestamps()}] [CONFIG] Target Domain: ${adDomain || "bnpp2project.local"}`,
-        `[${timestamps()}] [CONFIG] Username: ${adUsername || "m.esmaeili"}`,
-        `[${timestamps()}] [DNS] Querying standard DNS records for FQDN: ${adDomain || "bnpp2project.local"}...`,
-        `[${timestamps()}] [DNS] DNS lookup resolved domain domain controllers to: 192.168.26.10, 192.168.27.10`,
-        `[${timestamps()}] [LDAP] Connecting to detected Active Directory IP: 192.168.26.10 on port 389...`,
-        `[${timestamps()}] [LDAP] TCP socket successfully connected. Establishing LDAP Session...`,
-        `[${timestamps()}] [AUTH] Binding session as user principal: ${(adUsername || "m.esmaeili").includes("@") ? (adUsername || "m.esmaeili") : `${adUsername || "m.esmaeili"}@${adDomain || "bnpp2project.local"}`}...`,
-        `[${timestamps()}] [AUTH] Successfully authenticated! Bind session active.`,
-        `[${timestamps()}] [QUERY] Base DN resolved as: ${adDomain.split(".").map(p => `DC=${p}`).join(",")}`,
-        `[${timestamps()}] [QUERY] Fetching Directory computers and user accounts...`,
-        `[${timestamps()}] [QUERY] Discovered 4 select computer accounts inside OU=Workshop_Computers.`,
-        `[${timestamps()}] [QUERY] Discovered 5 select active user objects inside OU=Personnel_Users.`,
-        `[${timestamps()}] [SUCCESS] Connection fully verified and data imported from ${adDomain || "bnpp2project.local"} (Client-side Emulation Mode).`
-      ];
+      const [compsRes, usersRes] = await Promise.all([
+        fetch("/api/computers"),
+        fetch("/api/users")
+      ]);
 
-      // Realistic high-fidelity computers matching the user's domain and target requirements
-      const fallbackComputers: Computer[] = [
-        {
-          hostname: "DC-BNPP2-01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: timestamps(),
-          data: {
-            ipAddress: "192.168.26.10",
-            macAddress: "00:15:5D:AA:01:BC",
-            username: "bnpp2project\\m.esmaeili",
-            motherboard: { manufacturer: "Supermicro", product: "X12DPi-N6", serialNumber: "SM-9283741" },
-            cpu: { name: "Intel Xeon Silver 4314 @ 2.40GHz", cores: 16, logicalProcessors: 32, architecture: "x64" },
-            ram: { sizeGb: 64, speedMhz: 3200, slotsFilled: 4, manufacturer: "Samsung" },
-            gpu: { name: "ASPEED Graphics (Integrated)", vramGb: 1, driverVersion: "1.02.04" },
-            storage: [{ device: "Disk 0", model: "Intel Enterprise NVMe 1.6TB", sizeGb: 1600, freeGb: 1100, type: "SSD" }],
-            powerSupply: { model: "Standard Redundant 800W PSU", wattage: 800, isUPS: true, queryMethod: "WMI", note: "Dual Hot-Swap Redundant" },
-            osName: "Windows Server 2022 Datacenter",
-            domain: adDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: true,
-            smbV1Enabled: false,
-            insecureAccounts: [],
-            auditTime: timestamps(),
-            complianceScore: 100
-          },
-          history: [{ timestamp: timestamps(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved." }]
-        },
-        {
-          hostname: "WS-BNPP2-ENG01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: timestamps(),
-          data: {
-            ipAddress: "192.168.26.22",
-            macAddress: "00:15:5D:AA:22:11",
-            username: "bnpp2project\\a.karimi",
-            motherboard: { manufacturer: "Dell Inc.", product: "Precision 3660", serialNumber: "CN-0V28D1" },
-            cpu: { name: "Intel Core i7-13700K @ 3.40GHz", cores: 16, logicalProcessors: 24, architecture: "x64" },
-            ram: { sizeGb: 32, speedMhz: 4800, slotsFilled: 2, manufacturer: "Kingston" },
-            gpu: { name: "NVIDIA GeForce RTX 4070 Ti", vramGb: 12, driverVersion: "551.23" },
-            storage: [{ device: "Disk 0", model: "Samsung SSD 980 PRO 1TB", sizeGb: 1024, freeGb: 421, type: "SSD" }],
-            powerSupply: { model: "Dell 500W OEM Unit", wattage: 500, isUPS: false, queryMethod: "WMI", note: "Simulated OEM provider" },
-            osName: "Windows 11 Enterprise (Build 22631)",
-            domain: adDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: true,
-            smbV1Enabled: true,
-            insecureAccounts: ["Local Guest Account: Enabled"],
-            auditTime: timestamps(),
-            complianceScore: 67
-          },
-          history: [{ timestamp: timestamps(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved." }]
-        },
-        {
-          hostname: "WS-BNPP2-ENG02",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: timestamps(),
-          data: {
-            ipAddress: "192.168.26.23",
-            macAddress: "00:15:5D:AA:22:12",
-            username: "bnpp2project\\h.rezai",
-            motherboard: { manufacturer: "HP", product: "Z2 G9 Workstation", serialNumber: "PH-Z2G9-0012" },
-            cpu: { name: "Intel Core i5-12400 @ 2.50GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
-            ram: { sizeGb: 16, speedMhz: 4800, slotsFilled: 2, manufacturer: "Crucial" },
-            gpu: { name: "NVIDIA RTX A4000 (Enterprise)", vramGb: 16, driverVersion: "537.99" },
-            storage: [{ device: "Disk 0", model: "Crucial P5 Plus 1TB", sizeGb: 1024, freeGb: 610, type: "SSD" }],
-            powerSupply: { model: "HP 700W OEM PSU", wattage: 700, isUPS: false, queryMethod: "WMI", note: "Simulated vendor provider" },
-            osName: "Windows 11 Enterprise (Build 22631)",
-            domain: adDomain
-          },
-          securityAudit: {
-            firewallEnabled: true,
-            defenderActive: false,
-            smbV1Enabled: false,
-            insecureAccounts: ["Local User 'temp_admin': Password Never Expires"],
-            auditTime: timestamps(),
-            complianceScore: 62
-          },
-          history: [{ timestamp: timestamps(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved." }]
-        },
-        {
-          hostname: "WS-BNPP2-ACC01",
-          status: "success",
-          attempts: 1,
-          lastAttemptTime: timestamps(),
-          data: {
-            ipAddress: "192.168.27.44",
-            macAddress: "00:15:5D:AA:33:04",
-            username: "bnpp2project\\m.taghavi",
-            motherboard: { manufacturer: "ASUSTeK COMPUTER INC.", product: "PRIME B660M", serialNumber: "MB-283471" },
-            cpu: { name: "AMD Ryzen 5 5600X @ 3.70GHz", cores: 6, logicalProcessors: 12, architecture: "x64" },
-            ram: { sizeGb: 16, speedMhz: 3200, slotsFilled: 2, manufacturer: "Kingston" },
-            gpu: { name: "Intel UHD Graphics 770 (Integrated)", vramGb: 2, driverVersion: "31.0.101" },
-            storage: [{ device: "Disk 0", model: "Samsung SSD 970 EVO 500GB", sizeGb: 500, freeGb: 120, type: "SSD" }],
-            powerSupply: { model: "FSP 450W PSU", wattage: 450, isUPS: false, queryMethod: "WMI", note: "Estimated" },
-            osName: "Windows 10 Pro (Build 19045)",
-            domain: adDomain
-          },
-          securityAudit: {
-            firewallEnabled: false,
-            defenderActive: false,
-            smbV1Enabled: true,
-            insecureAccounts: ["Guest Account: Enabled", "User 'reception': Password Never Expires"],
-            auditTime: timestamps(),
-            complianceScore: 15
-          },
-          history: [{ timestamp: timestamps(), status: "success", protocol: "wmi", message: "Real-time Active Directory LDAP record retrieved." }]
-        }
-      ];
+      if (!compsRes.ok) {
+        const errJson = await compsRes.json().catch(() => ({ message: "Computer fetch failed" }));
+        throw new Error(errJson.message || "Failed to fetch computers from Active Directory.");
+      }
 
-      // High-fidelity active users list
-      const fallbackUsers = [
-        { sAMAccountName: "m.esmaeili", cn: "Mehdi Esmaeili", title: "Domain Administrator" },
-        { sAMAccountName: "s.ahmedi", cn: "Saeed Ahmedi", title: "IT Support Specialist" },
-        { sAMAccountName: "a.karimi", cn: "Ali Karimi", title: "Lead Process Engineer" },
-        { sAMAccountName: "h.rezai", cn: "Hassan Rezai", title: "Automation Operator" },
-        { sAMAccountName: "m.taghavi", cn: "Maryam Taghavi", title: "Senior Financial Accountant" }
-      ];
+      if (!usersRes.ok) {
+        const errJson = await usersRes.json().catch(() => ({ message: "User fetch failed" }));
+        throw new Error(errJson.message || "Failed to fetch users from Active Directory.");
+      }
 
-      // Stagger updates to show realistic loading state
-      await new Promise(r => setTimeout(r, 800));
-      setAdLogs(fallbackLogs);
+      const computers = await compsRes.json();
+      const users = await usersRes.json();
+
+      setAdLogs(prev => [
+        ...prev,
+        `[${timestamp()}] [QUERY] Real-time Computer accounts fetched: ${computers.length}`,
+        `[${timestamp()}] [QUERY] Real-time Enabled User accounts fetched: ${users.length}`,
+        `[${timestamp()}] [SUCCESS] Active Directory LDAP connector verified successfully.`
+      ]);
+
       setAdStatus("connected");
-      setAdFetchedComputers(fallbackComputers);
-      setAdFetchedUsers(fallbackUsers);
-      addLog(`[EMULATED] Active Directory integration verified successfully for domain: ${adDomain}`);
+      setAdFetchedComputers(computers);
+      setAdFetchedUsers(users);
+      addLog(`Active Directory integration verified successfully for domain: ${adDomain}. ${computers.length} computers, ${users.length} users imported.`);
+
+    } catch (err: any) {
+      console.error("Active Directory connection failed:", err.message || err);
+      const errMsg = err.message || String(err);
+      setAdError(errMsg);
+      setAdStatus("failed");
+      setAdLogs(prev => [
+        ...prev,
+        `[${timestamp()}] [ERROR] Active Directory LDAP integration failed:`,
+        `[${timestamp()}] [ERROR] ${errMsg}`,
+        `[${timestamp()}] [ERROR] Clear browser cache or check your network/LDAP server routing.`
+      ]);
+      addLog(`Active Directory integration failed: ${errMsg}`);
     }
   };
 
